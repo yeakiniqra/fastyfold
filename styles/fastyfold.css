@@ -1,0 +1,68 @@
+@import "tailwindcss";
+@source "../src/fastyfold/templates";
+@source "../src/fastyfold";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+    --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+    --color-accent: var(--ff-accent);
+    --color-accent-hover: var(--ff-accent-hover);
+    --color-accent-soft: var(--ff-accent-soft);
+    --color-accent-ink: var(--ff-accent-ink);
+    --color-rail: var(--ff-rail);
+    --color-canvas: var(--ff-canvas);
+    --color-panel: var(--ff-panel);
+    --color-soft: var(--ff-soft);
+    --color-line: var(--ff-line);
+    --color-fg: var(--ff-text);
+    --color-muted: var(--ff-muted);
+    --color-faint: var(--ff-faint);
+}
+
+/* Theme. Admin(accent=...) sets --ff-accent; everything else derives from it. */
+:root {
+    --ff-accent: #ff6a2b;
+    --ff-accent-hover: color-mix(in srgb, var(--ff-accent) 86%, black);
+    --ff-accent-soft: color-mix(in srgb, var(--ff-accent) 15%, white);
+    --ff-accent-ink: color-mix(in srgb, var(--ff-accent) 72%, black);
+    --ff-rail: #1c1917;
+    --ff-canvas: #f3efe9;
+    --ff-panel: #ffffff;
+    --ff-soft: #f7f4ef;
+    --ff-line: #ebe5dc;
+    --ff-text: #1c1917;
+    --ff-muted: #78716c;
+    --ff-faint: #a8a29e;
+}
+.dark {
+    --ff-accent-soft: color-mix(in srgb, var(--ff-accent) 20%, #221e1b);
+    --ff-accent-ink: color-mix(in srgb, var(--ff-accent) 62%, white);
+    --ff-rail: #0c0a09;
+    --ff-canvas: #171412;
+    --ff-panel: #221e1b;
+    --ff-soft: #2a2522;
+    --ff-line: #332d29;
+    --ff-text: #f5f1ec;
+    --ff-muted: #a8a29e;
+    --ff-faint: #6b635d;
+    color-scheme: dark;
+}
+
+[x-cloak] { display: none !important; }
+/* Fixed 1em box: before (or without) the icon font, the ligature name must not spill over its neighbours. */
+.icon { display: inline-block; width: 1em; overflow: hidden; font-family: "Material Symbols Rounded"; font-size: 20px; line-height: 1; font-weight: normal; font-style: normal;
+        letter-spacing: normal; text-transform: none; white-space: nowrap; direction: ltr; user-select: none;
+        -webkit-font-feature-settings: "liga"; font-feature-settings: "liga"; -webkit-font-smoothing: antialiased;
+        font-variation-settings: "opsz" 20, "wght" 450, "FILL" 0; }
+.icon.fill { font-variation-settings: "opsz" 20, "wght" 450, "FILL" 1; }
+.htmx-request.ff-loading, .htmx-request .ff-loading { opacity: .55; transition: opacity .15s; }
+
+@utility float { @apply rounded-3xl bg-panel shadow-[0_1px_2px_rgb(28_25_23/0.04),0_8px_24px_-12px_rgb(28_25_23/0.12)]; }
+@utility pill { @apply inline-flex h-10 items-center gap-2 rounded-full px-4 text-sm font-semibold whitespace-nowrap transition; }
+@utility pill-accent { @apply pill bg-accent text-white shadow-[0_6px_16px_-6px_var(--ff-accent)] hover:bg-accent-hover; }
+@utility pill-plain { @apply pill bg-panel text-fg shadow-xs hover:bg-soft; }
+@utility field { @apply h-11 w-full rounded-2xl border-2 border-transparent bg-soft px-4 text-sm text-fg outline-none placeholder:text-faint focus:border-accent focus:bg-panel; }
+@utility field-label { @apply mb-2 block text-sm font-semibold text-fg; }
+@utility hint { @apply mt-2 text-xs text-muted; }
+@utility kbd { @apply inline-flex h-6 min-w-6 items-center justify-center rounded-lg bg-soft px-1.5 text-[11px] font-bold text-muted shadow-[inset_0_-1px_0_var(--ff-line)]; }

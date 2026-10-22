@@ -1,0 +1,43 @@
+{% import "fastyfold/_macros.html" as ui with context %}
+{% set pk = ma.pk_of(obj) %}
+<div class="flex items-start gap-4">
+    {{ ui.avatar(ma.avatar_text(obj), 'size-14', 'rounded-2xl') }}
+    <div class="min-w-0 flex-1">
+        <div class="flex flex-wrap items-center gap-3"><h2 class="truncate text-2xl font-extrabold">{{ ma.label(obj) }}</h2>
+            {% if ma.board_field %}{{ ui.badge(ma, ma.board_field, obj) }}{% endif %}</div>
+        <p class="mt-1 text-muted">{{ ma.name }} #{{ pk }}{% if ma.subtitle(obj) %} · {{ ma.subtitle(obj) }}{% endif %}</p>
+    </div>
+    <a href="{{ admin.url(ma.slug, pk) }}" class="pill bg-soft pr-2 hover:bg-line">Open<span class="kbd bg-panel">↵</span></a>
+</div>
+
+{% set facts = ma.preview_fields | reject('in', [ma.pk, ma.title_field, ma.subtitle_field, ma.board_field, ma.lead_fk]) | list %}
+{% if facts %}
+<div class="mt-6 grid grid-cols-2 gap-3 xl:grid-cols-4">
+    {% for name in facts[:8] %}
+        <div class="min-w-0 rounded-2xl bg-soft p-4"><p class="text-xs font-semibold text-muted">{{ ma.column_label(name) }}</p><p class="mt-1 truncate text-lg font-extrabold">{{ ui.cell(ma, name, obj) }}</p></div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<div class="mt-6 grid grid-cols-2 gap-6">
+    <div>
+        <h3 class="font-bold">Quick actions</h3>
+        <form method="post" action="{{ admin.url(ma.slug, 'action') }}" class="mt-3 space-y-2">
+            {{ ui.csrf_input() }}<input type="hidden" name="ids" value="{{ pk }}">
+            <input type="hidden" name="next" value="{{ admin.url(ma.slug, view='split') }}">
+            <a href="{{ admin.url(ma.slug, pk) }}" class="flex w-full items-center gap-3 rounded-2xl border-2 border-line px-4 py-3 font-semibold transition hover:border-accent hover:bg-accent-soft">{{ ui.icon('edit', '!text-[18px]') }}<span class="flex-1">Edit {{ ma.name | lower }}</span><span class="kbd">E</span></a>
+            {% for a in ma.actions.values() if admin.can(user, a.name, ma) %}
+                <button name="action" value="{{ a.name }}" {% if a.key %}data-action-key="{{ a.key | lower }}"{% endif %} class="flex w-full items-center gap-3 rounded-2xl border-2 border-line px-4 py-3 text-left font-semibold transition hover:border-accent hover:bg-accent-soft"
+                        {% if a.confirm %}onclick='return confirm({{ a.confirm | tojson }})'{% endif %}>{{ ui.icon(a.icon, '!text-[18px]') }}<span class="flex-1">{{ a.label }}</span>{% if a.key %}<span class="kbd">{{ a.key | upper }}</span>{% endif %}</button>
+            {% endfor %}
+            {% if admin.can(user, 'delete', ma) %}
+                <button name="action" value="delete" onclick='return confirm({{ ("Delete " ~ ma.label(obj) ~ "?") | tojson }})' class="flex w-full items-center gap-3 rounded-2xl border-2 border-line px-4 py-3 text-left font-semibold text-rose-600 transition hover:border-rose-400 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-500/10">{{ ui.icon('delete', '!text-[18px]') }}<span class="flex-1">Delete</span></button>
+            {% endif %}
+        </form>
+    </div>
+    <div>
+        <h3 class="font-bold">History</h3>
+        {% set activity = history %}
+        {% include "fastyfold/partials/activity.html" %}
+    </div>
+</div>

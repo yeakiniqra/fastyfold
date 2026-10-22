@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}{{ admin.title }}{% endblock %}</title>
+    <meta name="csrf-token" content="{{ csrf }}">
+    {# ponytail: fonts come from Google Fonts; vendor the woff2 files for offline/intranet admins. #}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,300..500,0..1,0&display=block" rel="stylesheet">
+    <link rel="stylesheet" href="{{ admin.url('static', 'fastyfold.css') }}">
+    <style>:root { --ff-accent: {{ admin.accent }}; }</style>
+    <script>
+        /* Apply the saved theme before first paint. */
+        (function () {
+            var t = null; try { t = localStorage.getItem('ff-theme'); } catch (e) {}
+            var dark = t === 'dark' || ((!t || t === 'system') && matchMedia('(prefers-color-scheme: dark)').matches);
+            document.documentElement.classList.toggle('dark', dark);
+        })();
+    </script>
+    <script defer src="{{ admin.url('static', 'vendor', 'htmx.min.js') }}"></script>
+    <script defer src="{{ admin.url('static', 'fastyfold.js') }}"></script>
+    <script defer src="{{ admin.url('static', 'vendor', 'alpine.min.js') }}"></script>
+</head>
+<body class="bg-canvas font-sans text-sm text-fg antialiased" {% block body_attrs %}{% endblock %}>
+{% block body %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,22 @@
+{% extends "fastyfold/layout.html" %}
+{% import "fastyfold/_macros.html" as ui with context %}
+{% block title %}Audit log · {{ admin.title }}{% endblock %}
+
+{% block content %}
+<div class="mt-6">
+    <div class="flex items-center gap-3">
+        <h1 class="text-2xl font-extrabold">Audit log</h1>
+        <span class="text-muted">Every change made in this admin, newest first.</span>
+    </div>
+    <section class="float mt-5 p-6">
+        {% set activity = entries %}
+        {% include "fastyfold/partials/activity.html" %}
+        {% if has_more or page > 1 %}
+            <div class="mt-6 flex justify-between border-t border-line pt-4">
+                {% if page > 1 %}<a class="pill-plain bg-soft" href="{{ admin.url('_log', page=page - 1) }}">{{ ui.icon('chevron_left') }}Newer</a>{% else %}<span></span>{% endif %}
+                {% if has_more %}<a class="pill-plain bg-soft" href="{{ admin.url('_log', page=page + 1) }}">Older{{ ui.icon('chevron_right') }}</a>{% endif %}
+            </div>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}

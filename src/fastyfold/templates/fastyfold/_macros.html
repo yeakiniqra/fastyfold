@@ -1,0 +1,34 @@
+{% macro icon(name, cls='', fill=False) -%}
+<span class="icon {{ 'fill' if fill }} {{ cls }}" aria-hidden="true">{{ name }}</span>
+{%- endmacro %}
+
+{# kbd('⌘', 'K'): any number of keys. #}
+{% macro kbd() -%}
+<span class="flex items-center gap-1">{% for k in varargs %}<span class="kbd">{{ k }}</span>{% endfor %}</span>
+{%- endmacro %}
+
+{% macro initials(text) -%}
+{%- set words = (text or '?').split() -%}
+{{ (words[0][0] ~ (words[1][0] if words|length > 1 else '')) | upper }}
+{%- endmacro %}
+
+{# Soft avatar tile; hue picked from the text so it stays stable. #}
+{% macro avatar(text, size='size-10', rounded='rounded-2xl') -%}
+{%- set tones = ['bg-orange-100 text-orange-700', 'bg-emerald-100 text-emerald-700', 'bg-sky-100 text-sky-700', 'bg-amber-100 text-amber-700', 'bg-rose-100 text-rose-700'] -%}
+<span class="flex {{ size }} shrink-0 items-center justify-center {{ rounded }} text-xs font-bold {{ tones[tone(text)] }} dark:bg-white/10 dark:text-stone-200">{{ initials(text) }}</span>
+{%- endmacro %}
+
+{% macro badge(ma, name, obj) -%}
+{%- set c = ma.color(name, ma.value(obj, name)) -%}
+<span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold whitespace-nowrap" style="color: {{ c }}; background: color-mix(in srgb, {{ c }} 14%, transparent)">
+    <span class="size-1.5 rounded-full" style="background: {{ c }}"></span>{{ ma.display(obj, name) }}</span>
+{%- endmacro %}
+
+{% macro cell(ma, name, obj) -%}
+{%- if ma.is_badge(name) -%}{{ badge(ma, name, obj) }}
+{%- elif ma.fields.get(name) and ma.fields[name].kind == 'bool' -%}
+    {{ icon('check_circle' if ma.value(obj, name) else 'cancel', 'text-emerald-500' if ma.value(obj, name) else 'text-faint', fill=True) }}
+{%- else -%}{{ ma.display(obj, name) }}{%- endif -%}
+{%- endmacro %}
+
+{% macro csrf_input() -%}<input type="hidden" name="_csrf" value="{{ csrf }}">{%- endmacro %}

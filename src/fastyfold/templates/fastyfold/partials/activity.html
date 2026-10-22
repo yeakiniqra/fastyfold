@@ -1,0 +1,22 @@
+{% import "fastyfold/_macros.html" as ui with context %}
+{% set kinds = {'add': ('add_circle', 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'),
+                'change': ('edit', 'bg-accent-soft text-accent-ink'),
+                'delete': ('delete', 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300')} %}
+<ul class="mt-4 space-y-4">
+    {% for e in activity %}
+        {% set k = kinds.get(e.action, ('bolt', 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300')) %}
+        <li class="flex gap-3">
+            <span class="flex size-9 shrink-0 items-center justify-center rounded-2xl {{ k[1] }}">{{ ui.icon(k[0], '!text-[18px]') }}</span>
+            <p class="min-w-0 flex-1 leading-snug">
+                <b>{{ e.user }}</b>
+                {% set act = admin.models[e.model].actions.get(e.action) if e.model in admin.models else none %}
+                <span class="text-muted">{{ {'add': 'added', 'change': 'changed', 'delete': 'deleted'}.get(e.action) or ('ran “' ~ (act.label if act else e.action) ~ '” on') }}</span>
+                {% if e.action != 'delete' and e.model in admin.models %}<a class="font-semibold hover:text-accent-ink" href="{{ admin.url(e.model, e.object_id) }}">{{ e.object_repr }}</a>{% else %}<span class="font-semibold">{{ e.object_repr }}</span>{% endif %}
+                {% if e.changed %}<span class="block truncate text-xs text-muted">{% for f, v in e.changed.items() %}{{ f }}: {{ v[1] }}{{ ', ' if not loop.last }}{% endfor %}</span>{% endif %}
+                <span class="block text-xs text-faint">{{ e.at.strftime('%b %d, %H:%M') }}</span>
+            </p>
+        </li>
+    {% else %}
+        <li class="py-6 text-center text-muted">No activity yet. Changes made here are logged automatically.</li>
+    {% endfor %}
+</ul>

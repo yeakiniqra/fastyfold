@@ -1,0 +1,93 @@
+{% extends "fastyfold/layout.html" %}
+{% import "fastyfold/_macros.html" as ui with context %}
+{% block title %}Dashboard · {{ admin.title }}{% endblock %}
+
+{% block content %}
+<div class="mt-6 grid grid-cols-12 gap-5">
+    <section class="relative col-span-12 overflow-hidden rounded-3xl bg-rail p-8 text-white xl:col-span-8">
+        <div class="absolute -top-24 -right-16 size-80 rounded-full bg-accent/40 blur-3xl"></div>
+        {% if lead and mix %}
+            {% set peak = mix.values() | max %}
+            <div class="absolute right-10 bottom-0 flex h-36 items-end gap-2" aria-hidden="true">
+                {% for value, label in lead.fields[lead.board_field].choices %}
+                    <div class="w-4 rounded-full bg-gradient-to-t from-accent/30 to-accent" style="height: {{ [((mix.get(value, 0) / peak) * 100) | round, 6] | max }}%"></div>
+                {% endfor %}
+            </div>
+        {% endif %}
+        <p class="relative text-sm font-semibold text-stone-400">{{ admin.title }}</p>
+        <h1 class="relative mt-2 text-3xl font-extrabold">{{ greeting }}, {{ user }}</h1>
+        <p class="relative mt-2 max-w-md text-stone-300">
+            {% if lead %}You have <b class="text-accent">{{ counts[lead.slug] }}</b> {{ lead.name_plural | lower }} across {{ models | length }} {{ 'model' if models | length == 1 else 'models' }}.{% else %}Register a model to get started.{% endif %}
+        </p>
+        {% if lead %}
+            <div class="relative mt-6 flex gap-2">
+                <a href="{{ admin.url(lead.slug) }}" class="pill-accent">Open {{ lead.name_plural | lower }} {{ ui.icon('arrow_forward', '!text-[18px]') }}</a>
+                {% if admin.can(user, 'add', lead) %}<a href="{{ admin.url(lead.slug, 'new') }}" class="pill bg-white/10 text-white hover:bg-white/15">New {{ lead.name | lower }}</a>{% endif %}
+            </div>
+        {% endif %}
+    </section>
+
+    <section class="float col-span-12 p-6 xl:col-span-4">
+        {% if lead and mix %}
+            {% set total = mix.values() | sum %}
+            <div class="flex items-center justify-between"><h2 class="font-bold">{{ lead.name_plural }} by {{ lead.fields[lead.board_field].label | lower }}</h2><span class="text-xs font-semibold text-faint">{{ total }} total</span></div>
+            <div class="mt-4 flex items-center gap-6">
+                <svg viewBox="0 0 42 42" class="size-32 shrink-0 -rotate-90" aria-hidden="true">
+                    <circle cx="21" cy="21" r="15.9" fill="none" class="stroke-soft" stroke-width="6"/>
+                    {% set ns = namespace(off=0) %}
+                    {% for value, label in lead.fields[lead.board_field].choices %}
+                        {% set n = mix.get(value, 0) %}
+                        {% if n %}
+                            {% set len = [(n / total) * 100 - 1, 0.8] | max %}
+                            <circle cx="21" cy="21" r="15.9" fill="none" stroke-width="6" stroke="{{ lead.color(lead.board_field, value) }}" stroke-dasharray="{{ len }} {{ 100 - len }}" stroke-dashoffset="{{ -ns.off }}"/>
+                            {% set ns.off = ns.off + len + 1 %}
+                        {% endif %}
+                    {% endfor %}
+                </svg>
+                <ul class="flex-1 space-y-2.5">
+                    {% for value, label in lead.fields[lead.board_field].choices %}
+                        <li><a href="{{ admin.url(lead.slug, view='table', **{'f_' ~ lead.board_field: value}) }}" class="flex items-center gap-2 hover:text-accent-ink"><span class="size-2.5 rounded-full" style="background: {{ lead.color(lead.board_field, value) }}"></span><span class="flex-1 text-muted">{{ label }}</span><b>{{ mix.get(value, 0) }}</b></a></li>
+                    {% endfor %}
+                </ul>
+            </div>
+        {% else %}
+            <h2 class="font-bold">At a glance</h2>
+            <ul class="mt-4 space-y-3">{% for m in models %}<li class="flex justify-between"><span class="text-muted">{{ m.name_plural }}</span><b>{{ counts[m.slug] }}</b></li>{% endfor %}</ul>
+        {% endif %}
+    </section>
+
+    {% for m in models[:4] %}
+        <a href="{{ admin.url(m.slug) }}" class="col-span-6 rounded-3xl p-5 transition hover:-translate-y-0.5 xl:col-span-3 {{ 'bg-accent text-white' if loop.first else 'float' }}">
+            <div class="flex items-center justify-between">
+                <span class="font-semibold {{ 'text-white/80' if loop.first else 'text-muted' }}">{{ m.name_plural }}</span>
+                {{ ui.icon(m.icon, 'text-white/80' if loop.first else 'text-faint') }}
+            </div>
+            <div class="mt-4 text-3xl font-extrabold">{{ '{:,}'.format(counts[m.slug]) }}</div>
+            <div class="mt-1 text-xs font-semibold {{ 'text-white/80' if loop.first else 'text-muted' }}">{% if m.key %}Press G then {{ m.key | upper }}{% else %}Open {{ m.name_plural | lower }}{% endif %}</div>
+        </a>
+    {% endfor %}
+
+    {% if lead %}
+    <section class="float col-span-12 p-6 xl:col-span-7">
+        <div class="flex items-center justify-between"><h2 class="font-bold">Latest {{ lead.name_plural | lower }}</h2><a class="text-sm font-semibold text-accent-ink" href="{{ admin.url(lead.slug) }}">See all</a></div>
+        <ul class="mt-3 divide-y divide-line">
+            {% for obj in latest %}
+                <li><a href="{{ admin.url(lead.slug, lead.pk_of(obj)) }}" class="flex items-center gap-3 py-3">
+                    {{ ui.avatar(lead.avatar_text(obj)) }}
+                    <div class="min-w-0 flex-1 leading-tight"><div class="truncate font-semibold">{{ lead.label(obj) }}</div>
+                        <div class="text-xs text-faint">#{{ lead.pk_of(obj) }}{% if lead.subtitle(obj) %} · {{ lead.subtitle(obj) }}{% endif %}</div></div>
+                    {% if lead.board_field %}{{ ui.badge(lead, lead.board_field, obj) }}{% endif %}
+                </a></li>
+            {% else %}
+                <li class="py-6 text-center text-muted">Nothing here yet.</li>
+            {% endfor %}
+        </ul>
+    </section>
+    {% endif %}
+
+    <section class="float col-span-12 p-6 xl:col-span-5">
+        <div class="flex items-center justify-between"><h2 class="font-bold">Team activity</h2><a href="{{ admin.url('_log') }}" class="text-sm font-semibold text-accent-ink">Audit log</a></div>
+        {% include "fastyfold/partials/activity.html" %}
+    </section>
+</div>
+{% endblock %}

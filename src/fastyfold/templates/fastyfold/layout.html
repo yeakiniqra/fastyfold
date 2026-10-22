@@ -1,0 +1,157 @@
+{% extends "fastyfold/base.html" %}
+{% import "fastyfold/_macros.html" as ui with context %}
+
+{% block body_attrs %}x-data="ff" @keydown.window="key($event)" data-prefix="{{ admin.prefix }}" data-jumps='{{ jumps | tojson }}'{% endblock %}
+
+{% block body %}
+<div class="flex min-h-screen">
+
+    {# ───────────── Rail ───────────── #}
+    <aside class="sticky top-0 flex h-screen w-[76px] shrink-0 flex-col items-center gap-2 bg-rail py-5">
+        <a href="{{ admin.url('') }}" class="mb-4 flex size-11 items-center justify-center rounded-2xl bg-accent text-white" title="{{ admin.title }}">
+            {{ ui.icon(admin.logo_icon, '!text-[24px]', fill=True) }}
+        </a>
+        {% set home = current is none and request.url.path.rstrip('/') == admin.prefix %}
+        <a href="{{ admin.url('') }}" class="group relative flex size-11 items-center justify-center rounded-2xl transition {{ 'bg-white/10 text-white' if home else 'text-stone-500 hover:bg-white/5 hover:text-stone-200' }}">
+            {{ ui.icon('home', fill=home) }}
+            {% if home %}<span class="absolute -left-[18px] h-6 w-1 rounded-r-full bg-accent"></span>{% endif %}
+            <span class="pointer-events-none absolute left-14 z-50 rounded-lg bg-stone-800 px-2.5 py-1 text-xs font-semibold whitespace-nowrap text-white opacity-0 transition group-hover:opacity-100">Dashboard</span>
+        </a>
+        {% for g in nav %}
+            {% set on = current is not none and current.group == g.name %}
+            <a href="{{ admin.url(g.models[0].slug) }}" class="group relative flex size-11 items-center justify-center rounded-2xl transition {{ 'bg-white/10 text-white' if on else 'text-stone-500 hover:bg-white/5 hover:text-stone-200' }}">
+                {{ ui.icon(g.icon, fill=on) }}
+                {% if on %}<span class="absolute -left-[18px] h-6 w-1 rounded-r-full bg-accent"></span>{% endif %}
+                <span class="pointer-events-none absolute left-14 z-50 rounded-lg bg-stone-800 px-2.5 py-1 text-xs font-semibold whitespace-nowrap text-white opacity-0 transition group-hover:opacity-100">{{ g.name }}</span>
+            </a>
+        {% endfor %}
+        <a href="{{ admin.url('_log') }}" class="group relative flex size-11 items-center justify-center rounded-2xl transition {{ 'bg-white/10 text-white' if request.url.path.endswith('/_log') else 'text-stone-500 hover:bg-white/5 hover:text-stone-200' }}">
+            {{ ui.icon('history') }}
+            <span class="pointer-events-none absolute left-14 z-50 rounded-lg bg-stone-800 px-2.5 py-1 text-xs font-semibold whitespace-nowrap text-white opacity-0 transition group-hover:opacity-100">Audit log</span>
+        </a>
+        <div class="mt-auto flex flex-col items-center gap-3">
+            <button type="button" class="flex size-11 items-center justify-center rounded-2xl text-stone-500 hover:bg-white/5 hover:text-stone-200" @click="keys = true" title="Keyboard shortcuts (?)">{{ ui.icon('keyboard') }}</button>
+            <form method="post" action="{{ admin.url('logout') }}">
+                {{ ui.csrf_input() }}
+                <button class="flex size-10 items-center justify-center rounded-full bg-stone-700 text-xs font-bold text-white ring-2 ring-accent ring-offset-2 ring-offset-rail" title="Sign out {{ user }}">{{ ui.initials(user) }}</button>
+            </form>
+        </div>
+    </aside>
+
+    {# ───────────── Context panel ───────────── #}
+    <aside class="sticky top-0 h-screen w-60 shrink-0 overflow-y-auto border-r border-line px-4 py-6">
+        {% block context %}
+            <div class="px-2 text-xs font-bold tracking-widest text-faint uppercase">Workspace</div>
+            <div class="mt-1 px-2 text-lg font-extrabold">{{ admin.title }}</div>
+            <div class="mt-6 space-y-5">
+                {% for g in nav %}
+                    <div>
+                        <div class="px-2 text-xs font-semibold text-muted">{{ g.name }}</div>
+                        <ul class="mt-2 space-y-1">
+                            {% for m in g.models %}
+                                <li><a href="{{ admin.url(m.slug) }}" class="flex items-center gap-2.5 rounded-xl px-2 py-2 font-medium {{ 'bg-panel text-fg shadow-xs' if current and current.slug == m.slug else 'text-muted hover:bg-panel/60 hover:text-fg' }}">
+                                    {{ ui.icon(m.icon, '!text-[18px]') }}<span class="flex-1">{{ m.name_plural }}</span>
+                                    {% if m.key %}<span class="kbd">G {{ m.key|upper }}</span>{% endif %}</a></li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                {% endfor %}
+            </div>
+        {% endblock %}
+    </aside>
+
+    {# ───────────── Main ───────────── #}
+    <div class="min-w-0 flex-1 px-8 py-6">
+        <div class="flex items-center gap-3">
+            {% block back %}{% endblock %}
+            <button type="button" class="flex h-11 w-96 items-center gap-3 rounded-full bg-panel pr-2.5 pl-4 text-faint shadow-xs transition hover:text-muted" @click="openPalette()">
+                {{ ui.icon('search') }}Search records, models, actions…
+                <span class="ml-auto">{{ ui.kbd('⌘', 'K') }}</span>
+            </button>
+            <div class="ml-auto flex items-center gap-2">
+                <div class="flex rounded-full bg-panel p-1 shadow-xs">
+                    {% for mode, ic in [('light', 'light_mode'), ('dark', 'dark_mode'), ('system', 'contrast')] %}
+                        <button type="button" class="flex size-8 items-center justify-center rounded-full" @click="setTheme('{{ mode }}')"
+                                :class="theme === '{{ mode }}' ? 'bg-fg text-panel' : 'text-muted hover:text-fg'" title="{{ mode|capitalize }} theme">{{ ui.icon(ic, '!text-[18px]') }}</button>
+                    {% endfor %}
+                </div>
+                {% if admin.site_url %}<a href="{{ admin.site_url }}" class="pill-plain h-11">{{ ui.icon('open_in_new', '!text-[18px]') }}View site</a>{% endif %}
+            </div>
+        </div>
+
+        {% block content %}{% endblock %}
+    </div>
+</div>
+
+{# ───────────── Toast ───────────── #}
+{% if msg %}
+<div x-data="{ show: true }" x-init="setTimeout(() => show = false, 3500)" x-show="show" x-transition
+     class="fixed top-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-rail py-2.5 pr-3 pl-4 font-semibold text-white shadow-2xl">
+    {{ ui.icon('check_circle', 'text-emerald-400', fill=True) }}{{ msg }}
+    <button type="button" class="ml-2 flex size-6 items-center justify-center rounded-full hover:bg-white/10" @click="show = false">{{ ui.icon('close', '!text-[16px]') }}</button>
+</div>
+{% endif %}
+
+{# ───────────── ⌘K palette ───────────── #}
+<div x-show="palette" x-cloak x-transition.opacity class="fixed inset-0 z-50 flex items-start justify-center bg-rail/40 pt-[11vh] backdrop-blur-[2px]" @click.self="palette = false">
+    <div class="w-[660px] overflow-hidden rounded-3xl bg-panel shadow-2xl">
+        <div class="flex items-center gap-3 border-b border-line px-5 py-4">
+            {{ ui.icon('search', 'text-accent') }}
+            <input x-ref="pq" x-model="pq" @input.debounce.150ms="search()" class="flex-1 bg-transparent text-base font-semibold outline-none placeholder:text-faint" placeholder="Search records, models, actions…" autocomplete="off">
+            <span class="kbd">esc</span>
+        </div>
+        <div class="max-h-[440px] overflow-y-auto p-2">
+            <template x-for="g in results" :key="g.title">
+                <div>
+                    <p class="px-3 pt-3 pb-1.5 text-xs font-bold text-faint" x-text="g.title"></p>
+                    <template x-for="it in g.items" :key="it.k">
+                        <button type="button" class="flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-left" @mouseenter="pi = it.k" @click="run(it)" :class="pi === it.k ? 'bg-accent-soft' : ''">
+                            <span class="flex size-9 shrink-0 items-center justify-center rounded-xl" :class="pi === it.k ? 'bg-accent text-white' : 'bg-soft text-muted'"><span class="icon !text-[18px]" x-text="it.icon"></span></span>
+                            <span class="min-w-0 flex-1 leading-tight"><span class="block truncate font-semibold" x-html="hl(it.label)"></span><span class="block truncate text-xs text-faint" x-text="it.sub"></span></span>
+                            <span class="flex gap-1"><template x-for="k in (it.keys || [])"><span class="kbd" x-text="k"></span></template></span>
+                            <span x-show="pi === it.k && !it.keys" class="kbd">↵</span>
+                        </button>
+                    </template>
+                </div>
+            </template>
+            <p x-show="!results.length" class="px-3 py-8 text-center text-muted">No matches for “<span x-text="pq"></span>”.</p>
+        </div>
+        <div class="flex items-center gap-4 border-t border-line bg-soft/60 px-5 py-3 text-xs font-semibold text-muted">
+            <span class="flex items-center gap-1"><span class="kbd bg-panel">↑</span><span class="kbd bg-panel">↓</span> navigate</span>
+            <span class="flex items-center gap-1"><span class="kbd bg-panel">↵</span> open</span>
+            <span class="flex items-center gap-1"><span class="kbd bg-panel">⌘</span><span class="kbd bg-panel">↵</span> new tab</span>
+            <span class="ml-auto flex items-center gap-1.5 text-faint">{{ ui.icon(admin.logo_icon, '!text-[16px] text-accent', fill=True) }}fastyfold search</span>
+        </div>
+    </div>
+</div>
+
+{# ───────────── Shortcuts ───────────── #}
+<div x-show="keys" x-cloak x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center bg-rail/40 backdrop-blur-[2px]" @click.self="keys = false">
+    <div class="float w-[820px] p-8">
+        <div class="flex items-center gap-3">
+            <span class="flex size-11 items-center justify-center rounded-2xl bg-accent-soft text-accent-ink">{{ ui.icon('keyboard') }}</span>
+            <div><h2 class="text-xl font-extrabold">Keyboard shortcuts</h2><p class="text-muted">Work faster without the mouse.</p></div>
+            <button type="button" class="ml-auto flex size-10 items-center justify-center rounded-full bg-soft hover:bg-line" @click="keys = false">{{ ui.icon('close') }}</button>
+        </div>
+        <div class="mt-7 grid grid-cols-3 gap-8">
+            {% set sections = [
+                ('Everywhere', [('Search everything', ['⌘', 'K']), ('Quick search', ['/']), ('Show shortcuts', ['?']), ('Go to dashboard', ['G', 'D']), ('Toggle dark mode', ['T']), ('Close panel', ['Esc'])]),
+                ('Lists', [('Next / previous', ['J', 'K']), ('Open record', ['↵']), ('Select record', ['X']), ('Open filters', ['F']), ('Table / Board / Split', ['1', '2', '3']), ('New record', ['N'])]),
+                ('Forms', [('Save', ['⌘', 'S']), ('Save & keep editing', ['⌘', '↵']), ('Next field', ['Tab']), ('Back to list', ['Esc'])]),
+            ] %}
+            {% for title, rows in sections %}
+                <div>
+                    <h3 class="mb-3 text-xs font-bold tracking-widest text-faint uppercase">{{ title }}</h3>
+                    <ul class="space-y-2.5">
+                        {% for label, keys in rows %}<li class="flex items-center justify-between gap-3"><span class="text-muted">{{ label }}</span>{{ ui.kbd(*keys) }}</li>{% endfor %}
+                        {% if title == 'Everywhere' %}{% for g in nav %}{% for m in g.models if m.key %}
+                            <li class="flex items-center justify-between gap-3"><span class="text-muted">Go to {{ m.name_plural|lower }}</span>{{ ui.kbd('G', m.key|upper) }}</li>
+                        {% endfor %}{% endfor %}{% endif %}
+                    </ul>
+                </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+{% endblock %}
