@@ -1,12 +1,12 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-fancy-pypi-readme>=24"]
 build-backend = "hatchling.build"
 
 [project]
 name = "fastyfold"
 version = "0.2.0"
-description = "A modern admin panel for FastAPI"
-readme = "README.md"
+description = "A modern admin panel for FastAPI: table, board and split views, ⌘K search, roles, an audit log and a typed JSON API"
+dynamic = ["readme"]
 license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [{ name = "yeakiniqra" }]
@@ -40,6 +40,31 @@ dev = ["uvicorn>=0.29", "aiosqlite>=0.20", "pytest>=8", "pytest-cov>=5", "httpx>
 Repository = "https://github.com/yeakiniqra/fastyfold"
 Changelog = "https://github.com/yeakiniqra/fastyfold/blob/main/CHANGELOG.md"
 
+# PyPI page: the README, links made absolute, plus this release's changelog section.
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+text = "\n---\n\n**Release notes**\n\n"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "CHANGELOG.md"
+pattern = "(## \\d+\\.\\d+\\.\\d+.*?)\n## \\d"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '\]\((docs/[^)]+)\)'
+replacement = '](https://raw.githubusercontent.com/yeakiniqra/fastyfold/main/\1)'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '\]\(((?:[A-Z]+\.md)|LICENSE)\)'
+replacement = '](https://github.com/yeakiniqra/fastyfold/blob/main/\1)'
+
+[tool.hatch.build.targets.sdist]
+exclude = ["docs/", ".github/"]     # screenshots stay on GitHub; the PyPI page links to them
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/fastyfold"]
 
@@ -61,6 +86,7 @@ ignore = ["E501"]
 [tool.coverage.run]
 source = ["fastyfold"]
 branch = true
+concurrency = ["thread", "greenlet"]   # TestClient runs the app in a thread; async SQLAlchemy runs code in greenlets
 
 [tool.coverage.report]
 show_missing = true

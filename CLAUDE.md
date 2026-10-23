@@ -19,6 +19,8 @@ uvicorn examples.shop.app:app --reload   # demo admin at http://127.0.0.1:8000/a
 TAILWINDCSS_VERSION=v4.1.11 tailwindcss -i styles/fastyfold.css -o src/fastyfold/static/fastyfold.css --minify
 ```
 
+Release: bump `version` in `pyproject.toml`, add `## <version>` to `CHANGELOG.md` (it becomes the GitHub release notes and the end of the PyPI page), then push tag `v<version>`; `.github/workflows/publish.yml` tests, builds, publishes to PyPI (trusted publishing) and creates the GitHub Release.
+
 The built `fastyfold.css` is committed. `tailwindcss` is the standalone binary fetched by `pytailwindcss`; no Node anywhere.
 
 ## Layout
