@@ -22,7 +22,10 @@ A modern admin panel for FastAPI. Point it at your SQLAlchemy models and get a f
 - **File and image uploads** to a local folder or your own storage (S3, GCS…).
 - **CSV export** of the current search and filters, or of the selected rows.
 - **Your own screens:** `@admin.page(...)` adds a page to the rail and ⌘K; `@admin.widget(...)` adds a card or chart to the dashboard.
-- **Built-in sign-in with rate limiting, CSRF protection and per-model permissions.**
+- **A ready-made roles editor:** `Admin(owners=["you"])` adds a Roles screen with a permission matrix (models and pages × view, add, change, delete, export and each action). People get exactly what their roles grant.
+- **Per-user and per-tenant data:** one `get_query(request)` override scopes every list, count, export, lookup and record; `has_object_permission` guards single records.
+- **A typed JSON API, if you want one:** `Admin(api=True)` adds `/admin/api/{model}` CRUD with generated Pydantic schemas, shown in your app's OpenAPI docs and protected by your own FastAPI auth dependency.
+- **Secure by default:** server-side sessions that end on sign-out, CSRF on every write, sign-in rate limiting, clickjacking and no-cache headers, per-model and per-record permissions.
 - **Audit log:** every add, change, delete and action is recorded with who did it and what changed (old → new), filterable by user, model, action and date.
 - **One colour rebrands everything:** `Admin(accent="#2f6fed")`. Light, dark and system themes.
 - **Async SQLAlchemy 2.0**, server-rendered with Jinja2, htmx and Alpine.js. No SPA and no frontend build.
@@ -103,9 +106,16 @@ uvicorn examples.shop.app:app --reload     # http://127.0.0.1:8000/admin  (admin
 | `readonly_fields` | `[]` | Shown, never edited |
 | `choices`, `colors` | from Enum | Turn any column into choices; colour per value |
 | `schema` | none | Pydantic model to validate form data |
-| `ordering`, `per_page` | `-pk`, 25 | Default sort and page size |
+| `ordering`, `per_page`, `per_page_options` | `-pk`, 25, `[25, 50, 100]` | Default sort, page size, and the sizes users may pick |
+| `column_labels` | `{}` | Rename columns and fields: `{"total": "Amount"}`; works for computed and dotted columns too |
+| `exclude` | `[]` | Fields kept off the form (and so never written) |
+| `save_as` | `False` | A "Save as new" button on the edit form |
+| `select_all_limit` | 1000 | Most rows a bulk action may touch via "Select all N matching" |
+| `get_query(request)` | all rows | The rows this request may see; see [Per-user data](#per-user-data) |
 | `has_permission(user, perm)` | allow | `perm` is `view`, `add`, `change`, `delete`, `export` or an action name |
-| `save(session, obj, is_new)`, `delete(session, obj)` | add / delete | Hooks around writes |
+| `has_object_permission(user, perm, obj)` | allow | The same check for one record, before it is shown, changed, deleted, moved or acted on |
+| `save(session, obj, is_new)`, `delete(session, obj)` | add / delete | Hooks inside the transaction |
+| `after_save(obj, is_new)`, `after_delete(obj)` | nothing | Hooks after commit: notify, clear caches. Sync or async |
 
 ## Admin options
 
@@ -124,12 +134,64 @@ Admin(
     media_dir="uploads",          # where file_fields are stored (served to signed-in users at /admin/_media/…)
     storage=None,                 # or your own storage instead of media_dir, see below
     max_upload=10 * 1024 * 1024,  # bytes per file
+    secure_cookies=None,          # None follows the request scheme; True behind a TLS-terminating proxy
+    cookie_path=None,             # defaults to the mount path; "/" lets admin.current_user work on your other routes
+    templates_dir="templates",    # your templates win; extend the originals with "original/fastyfold/<name>.html"
+    api=False,                    # JSON API at /admin/api/{model}
+    api_auth=None,                # a FastAPI dependency returning the user, for API clients (bearer token, API key)
+    owners=["nusrat"],            # turns on roles: owners can do everything and manage roles; everyone else gets what their roles grant
 )
 ```
 
 `fastyfold.security` has `hash_password` and `verify_password` (PBKDF2) if you need to store admin passwords.
 
 Behind a proxy, run uvicorn with `--proxy-headers` so the sign-in limit counts visitors, not the proxy.
+
+### Roles
+
+```python
+admin = Admin(engine, ..., owners=["nusrat"])
+```
+
+Owners see a **Roles** entry in the rail and ⌘K. A role has a name, its people (one username per line) and a permission matrix: every model and page × view / add / change / delete / export, plus each `@action`. Click a model to tick its row, or a column heading to tick it everywhere. Someone in several roles gets all their permissions combined, and someone in no role sees nothing.
+
+Roles stack with your code: `has_permission`, `has_object_permission`, `get_query` and `Admin(permission=...)` still apply, and every one of them has to allow. Roles are stored in `fastyfold_role`, `fastyfold_role_grant` and `fastyfold_role_member`, created on first use, and role changes appear in the audit log for owners. A user is whatever your `authenticate` returns, so use the same names in a role's people list.
+
+### Per-user data
+
+Override `get_query` and every way into that model (list, counts, dashboard, ⌘K, export, autocomplete, record pages, bulk actions, the API) is limited to what it returns. Rows outside it are a 404, and can't be picked in another model's foreign-key field either.
+
+```python
+class OrderAdmin(ModelAdmin):
+    model = Order
+
+    def get_query(self, request):
+        user = request.state.admin_user
+        query = super().get_query(request)
+        return query if user == "owner" else query.where(Order.shop_id.in_(select(Shop.id).where(Shop.manager == user)))
+
+    def has_object_permission(self, user, perm, obj):
+        return perm == "view" or obj.status != "closed"     # closed orders are read-only
+```
+
+### Sessions and your own routes
+
+Sessions live in a `fastyfold_session` table (created on first use, next to the audit log). Signing out deletes the row, so a copied cookie stops working at once; `await admin.end_sessions("nusrat")` signs someone out everywhere, e.g. after a password change.
+
+Use the admin's sign-in on your own routes with `Depends(admin.current_user)` (set `cookie_path="/"` if they live outside the admin path).
+
+### JSON API
+
+```python
+async def api_key(x_api_key: str = Header()) -> str:
+    if x_api_key != settings.admin_api_key:
+        raise HTTPException(401)
+    return "automation"
+
+admin = Admin(engine, ..., api_auth=api_key)     # or api=True to use the browser session (+ X-CSRF-Token on writes)
+```
+
+Each model gets `GET /admin/api/{model}` (with `q`, `sort`, `page`, `per_page` and the list's `f_<field>` filters), `GET/PATCH/DELETE /admin/api/{model}/{pk}` and `POST /admin/api/{model}`. Bodies are validated by Pydantic models generated from the ModelAdmin, then by its `schema`; writes are audited and run the same hooks as the forms. Constraint errors come back as 409.
 
 ### Custom pages and dashboard widgets
 
@@ -166,6 +228,7 @@ Images must be real PNG, JPEG, GIF or WebP files (SVG is refused because it can 
 
 ```bash
 pip install -e ".[dev]" && playwright install chromium && pytest
+FASTYFOLD_TEST_DB=postgresql+asyncpg://user:pass@localhost/db pytest --ignore=tests/test_browser.py   # against Postgres
 # only when changing styles; the built CSS is committed
 TAILWINDCSS_VERSION=v4.1.11 tailwindcss -i styles/fastyfold.css -o src/fastyfold/static/fastyfold.css --minify
 ```

@@ -146,3 +146,98 @@ def test_limit_is_configurable(client):
 def test_limit_can_be_turned_off(client):
     fail(client, 30)
     assert login(client).status_code == HTTPStatus.SEE_OTHER
+
+
+######################################################################
+# Server-side sessions
+######################################################################
+def test_cookie_stops_working_after_sign_out(client, submit):
+    login(client)
+    stolen = client.cookies.get(SESSION_COOKIE)
+    submit("/admin/logout")
+    client.cookies.set(SESSION_COOKIE, stolen, domain="testserver.local", path="/admin")
+    assert client.get("/admin/").status_code == HTTPStatus.SEE_OTHER
+
+
+def test_signing_out_ends_only_that_browser(app, admin):
+    from fastapi.testclient import TestClient
+
+    with TestClient(app, follow_redirects=False) as laptop, TestClient(app, follow_redirects=False) as phone:
+        login(laptop)
+        login(phone)
+        token = admin.signer.csrf(laptop.cookies.get(SESSION_COOKIE))
+        laptop.post("/admin/logout", data={"_csrf": token})
+        assert laptop.get("/admin/").status_code == HTTPStatus.SEE_OTHER
+        assert phone.get("/admin/").status_code == HTTPStatus.OK
+        laptop.portal.call(admin.engine.dispose)
+
+
+def test_end_sessions_signs_out_everywhere(app, admin):
+    from fastapi.testclient import TestClient
+
+    with TestClient(app, follow_redirects=False) as a, TestClient(app, follow_redirects=False) as b:
+        login(a)
+        login(b)
+        login(b, "editor")
+        assert a.portal.call(admin.end_sessions, "admin") == 2
+        assert a.get("/admin/").status_code == HTTPStatus.SEE_OTHER
+        assert b.get("/admin/").status_code == HTTPStatus.OK, "editor's session is untouched"
+        a.portal.call(admin.engine.dispose)
+
+
+def test_expired_session_is_refused(client, db):
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import update
+
+    from fastyfold.audit import AdminSession
+
+    login(client)
+
+    async def expire():
+        async with db.admin.session() as s:
+            await s.execute(update(AdminSession).values(expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)))
+            await s.commit()
+    db.run(expire)
+    assert client.get("/admin/").status_code == HTTPStatus.SEE_OTHER
+
+
+def test_forged_session_id_is_refused(client, admin):
+    login(client)
+    client.cookies.set(SESSION_COOKIE, admin.signer.dump("admin", "made-up"), domain="testserver.local", path="/admin")
+    assert client.get("/admin/").status_code == HTTPStatus.SEE_OTHER
+
+
+@pytest.mark.parametrize("admin_options", [{"secure_cookies": True}])
+def test_secure_cookies_behind_a_proxy(client):
+    assert "Secure" in login(client).headers["set-cookie"]
+
+
+######################################################################
+# Error pages and headers
+######################################################################
+@pytest.mark.parametrize("path, code", [("/admin/secret", 403), ("/admin/post/999", 404), ("/admin/nope", 404), ("/admin/_log?page=abc", 422)])
+def test_browser_errors_are_admin_pages(editor_client, path, code):
+    r = editor_client.get(path, headers={"Accept": "text/html"})
+    assert r.status_code == code and r.headers["content-type"].startswith("text/html")
+    assert f'data-error="{code}"' in r.text and "Dashboard" in r.text
+
+
+def test_api_errors_stay_json(editor_client):
+    r = editor_client.get("/admin/secret")
+    assert r.json() == {"detail": "You don't have permission to do that."}
+    assert editor_client.get("/admin/_log?page=abc").json()["detail"][0]["loc"] == ["query", "page"]
+
+
+def test_htmx_errors_stay_short(editor_client):
+    r = editor_client.get("/admin/secret/1/preview", headers={"Accept": "text/html", "HX-Request": "true"})
+    assert r.status_code == 403 and "data-error" not in r.text
+
+
+@pytest.mark.parametrize("path", ["/admin/", "/admin/login", "/admin/post", "/admin/_search"])
+def test_security_headers(client, path):
+    login(client)
+    headers = client.get(path).headers
+    assert headers["x-frame-options"] == "DENY" and headers["content-security-policy"] == "frame-ancestors 'none'"
+    assert headers["cache-control"] == "no-store" and headers["x-content-type-options"] == "nosniff"
+    assert headers["referrer-policy"] == "same-origin"

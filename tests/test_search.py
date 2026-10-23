@@ -12,7 +12,7 @@ def labels(items):
 def test_empty_query_lists_models_and_actions(admin_client):
     groups = search(admin_client)
     assert "Records" not in groups
-    assert labels(groups["Models"]) == ["Posts", "Tags", "Authors", "Secrets", "Reports", "Raw"]
+    assert labels(groups["Models"]) == ["Posts", "Tags", "Authors", "Secrets", "Tickets", "Seats", "Reports", "Raw"]
     assert {"New post", "New author", "Toggle dark mode", "Keyboard shortcuts", "Audit log"} <= set(labels(groups["Actions"]))
 
 

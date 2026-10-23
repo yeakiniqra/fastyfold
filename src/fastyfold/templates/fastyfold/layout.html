@@ -25,6 +25,12 @@
                 <span class="pointer-events-none absolute left-14 z-50 rounded-lg bg-stone-800 px-2.5 py-1 text-xs font-semibold whitespace-nowrap text-white opacity-0 transition group-hover:opacity-100">{{ g.name }}</span>
             </a>
         {% endfor %}
+        {% if user in admin.owners %}
+        <a href="{{ admin.url('_roles') }}" class="group relative flex size-11 items-center justify-center rounded-2xl transition {{ 'bg-white/10 text-white' if '/_roles' in request.url.path else 'text-stone-500 hover:bg-white/5 hover:text-stone-200' }}" data-roles-link>
+            {{ ui.icon('shield_person') }}
+            <span class="pointer-events-none absolute left-14 z-50 rounded-lg bg-stone-800 px-2.5 py-1 text-xs font-semibold whitespace-nowrap text-white opacity-0 transition group-hover:opacity-100">Roles</span>
+        </a>
+        {% endif %}
         <a href="{{ admin.url('_log') }}" class="group relative flex size-11 items-center justify-center rounded-2xl transition {{ 'bg-white/10 text-white' if request.url.path.endswith('/_log') else 'text-stone-500 hover:bg-white/5 hover:text-stone-200' }}">
             {{ ui.icon('history') }}
             <span class="pointer-events-none absolute left-14 z-50 rounded-lg bg-stone-800 px-2.5 py-1 text-xs font-semibold whitespace-nowrap text-white opacity-0 transition group-hover:opacity-100">Audit log</span>

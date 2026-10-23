@@ -13,12 +13,12 @@ def test_signer_requires_secret_key():
 
 def test_signer_round_trip():
     s = Signer("k")
-    assert s.load(s.dump("nusrat")) == "nusrat"
+    assert s.load(s.dump("nusrat", "sid-1")) == ("nusrat", "sid-1")
 
 
-def test_signer_cookie_is_unique_per_sign_in():
-    s = Signer("k")
-    assert s.dump("nusrat") != s.dump("nusrat")
+def test_session_ids_are_unique():
+    from fastyfold.security import new_session_id
+    assert len({new_session_id() for _ in range(100)}) == 100 and len(new_session_id()) >= 40
 
 
 @pytest.mark.parametrize("cookie", [None, "", "garbage", "eyJ1IjoiYWRtaW4ifQ.bad.sig"])
@@ -28,19 +28,19 @@ def test_signer_rejects_missing_or_malformed(cookie):
 
 def test_signer_rejects_tampered_cookie():
     s = Signer("k")
-    cookie = s.dump("editor")
+    cookie = s.dump("editor", "sid")
     assert s.load(cookie[:-2] + ("aa" if not cookie.endswith("aa") else "bb")) is None
 
 
 def test_signer_rejects_cookie_signed_with_other_key():
-    assert Signer("k").load(Signer("other").dump("admin")) is None
+    assert Signer("k").load(Signer("other").dump("admin", "sid")) is None
 
 
 def test_signer_rejects_expired_cookie(monkeypatch):
     import itsdangerous.timed
 
     s = Signer("k")
-    cookie = s.dump("admin")
+    cookie = s.dump("admin", "sid")
     real = itsdangerous.timed.time.time
     monkeypatch.setattr(itsdangerous.timed.time, "time", lambda: real() + SESSION_MAX_AGE + 10)
     assert s.load(cookie) is None
@@ -51,7 +51,7 @@ def test_signer_rejects_expired_cookie(monkeypatch):
 ######################################################################
 def test_csrf_is_bound_to_the_cookie():
     s = Signer("k")
-    a, b = s.dump("admin"), s.dump("admin")
+    a, b = s.dump("admin", "one"), s.dump("admin", "two")
     assert s.csrf(a) == s.csrf(a)
     assert s.csrf(a) != s.csrf(b)
     assert s.csrf_ok(a, s.csrf(a))

@@ -2,11 +2,12 @@
 
 import enum
 import json
+import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Enum, Float, Integer, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, Date, DateTime, Enum, Float, Integer, Interval, Numeric, String, Text, Time, Uuid
 from sqlalchemy.orm import ColumnProperty, Mapper
 
 
@@ -18,7 +19,7 @@ class FieldError(ValueError):
 class Field:
     name: str
     label: str
-    kind: str                       # int decimal str text bool date datetime choice fk json m2m image file
+    kind: str                       # int decimal str text bool date datetime time uuid choice fk json m2m image file other
     required: bool = False
     readonly: bool = False
     choices: list[tuple[str, str]] = field(default_factory=list)   # (value, label)
@@ -27,6 +28,7 @@ class Field:
     auto: bool = False              # filled by the database (server_default); off forms unless listed
     relation: str | None = None     # relationship attribute name for fk and m2m fields
     target: type | None = None      # related model class for fk and m2m fields
+    key_kind: str = "int"           # fk only: kind of the referenced key (int, str or uuid)
     help: str = ""
 
     def parse(self, raw: str | None):
@@ -38,15 +40,20 @@ class Field:
             if self.required:
                 raise FieldError("This field is required.")
             return None
+        kind = self.key_kind if self.kind == "fk" else self.kind
         try:
-            if self.kind in ("int", "fk"):
+            if kind == "int":
                 return int(raw)
-            if self.kind == "decimal":
+            if kind == "uuid":
+                return uuid.UUID(raw)
+            if kind == "decimal":
                 return Decimal(raw)
             if self.kind == "date":
                 return date.fromisoformat(raw)
             if self.kind == "datetime":
                 return datetime.fromisoformat(raw)
+            if self.kind == "time":
+                return time.fromisoformat(raw)
             if self.kind == "json":
                 return json.loads(raw)
         except (ValueError, InvalidOperation):
@@ -59,8 +66,8 @@ class Field:
 
     @property
     def kind_label(self) -> str:
-        return {"int": "whole number", "fk": "option", "decimal": "number", "date": "date",
-                "datetime": "date and time", "json": "JSON value"}.get(self.kind, "value")
+        return {"int": "whole number", "fk": "option", "decimal": "number", "date": "date", "time": "time",
+                "datetime": "date and time", "json": "JSON value", "uuid": "UUID"}.get(self.kind, "value")
 
     def form_value(self, value) -> str:
         """Python value -> string for an <input value>."""
@@ -70,6 +77,8 @@ class Field:
             return str(value.value)
         if self.kind == "datetime" and isinstance(value, datetime):
             return value.strftime("%Y-%m-%dT%H:%M")
+        if self.kind == "time" and isinstance(value, time):
+            return value.strftime("%H:%M")
         if self.kind == "json":
             return json.dumps(value, indent=2)
         return str(value)
@@ -87,6 +96,8 @@ class Field:
             return value.strftime("%b %d, %H:%M")
         if self.kind == "date" and isinstance(value, date):
             return value.strftime("%b %d, %Y")
+        if self.kind == "time" and isinstance(value, time):
+            return value.strftime("%H:%M")
         if self.kind == "decimal":
             return f"{value:,.2f}"
         if self.kind in ("image", "file"):
@@ -99,9 +110,14 @@ def humanize(name: str) -> str:
 
 
 def _kind(col) -> str:
-    t = col.type
-    if col.foreign_keys:
-        return "fk"
+    return "fk" if col.foreign_keys else _type_kind(col.type)
+
+
+def _type_kind(t) -> str:
+    """Kind for a column type. Types fastyfold can't edit safely (Interval, ARRAY, LargeBinary…) are "other": shown, never edited."""
+    if isinstance(t, Interval):
+        return "other"
+    t = getattr(t, "impl_instance", t)      # a TypeDecorator behaves like the type it wraps
     if isinstance(t, Enum):
         return "choice"
     if isinstance(t, Boolean):
@@ -110,6 +126,10 @@ def _kind(col) -> str:
         return "datetime"
     if isinstance(t, Date):
         return "date"
+    if isinstance(t, Time):
+        return "time"
+    if isinstance(t, Uuid):
+        return "uuid"
     if isinstance(t, Integer):
         return "int"
     if isinstance(t, (Numeric, Float)):
@@ -118,7 +138,7 @@ def _kind(col) -> str:
         return "json"
     if isinstance(t, Text) or (isinstance(t, String) and (t.length or 0) > 255):
         return "text"
-    return "str"
+    return "str" if isinstance(t, String) else "other"
 
 
 def fields_for(mapper: Mapper, choices: dict[str, list] | None = None, readonly: set[str] = frozenset(),
@@ -142,8 +162,8 @@ def fields_for(mapper: Mapper, choices: dict[str, list] | None = None, readonly:
             name=prop.key,
             label=humanize(prop.key.removesuffix("_id") if kind == "fk" else prop.key),
             kind=kind,
-            required=not col.nullable and not col.primary_key and kind != "bool",
-            readonly=col.primary_key or prop.key in readonly,
+            required=not col.nullable and not col.primary_key and kind not in ("bool", "other"),
+            readonly=col.primary_key or prop.key in readonly or kind == "other",
             default=default,
             auto=col.server_default is not None,
         )
@@ -154,8 +174,10 @@ def fields_for(mapper: Mapper, choices: dict[str, list] | None = None, readonly:
         if prop.key in choices:
             f.kind = "choice"
             f.choices = [(str(c[0]), str(c[1])) if isinstance(c, (tuple, list)) else (str(c), humanize(str(c))) for c in choices[prop.key]]
-        if kind == "fk" and prop.key in fk_relations:
-            f.relation, f.target = fk_relations[prop.key]
+        if kind == "fk":
+            f.key_kind = _type_kind(col.type)
+            if prop.key in fk_relations:
+                f.relation, f.target = fk_relations[prop.key]
         if prop.key in files:
             f.kind = files[prop.key]
         out[prop.key] = f

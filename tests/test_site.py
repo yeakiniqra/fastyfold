@@ -5,14 +5,14 @@ from http import HTTPStatus
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from fastyfold import Admin, ModelAdmin
 from fastyfold.security import SESSION_COOKIE
 
 from .factories import post
-from .server.app import AuthorAdmin, PostAdmin, authenticate, create_app
-from .server.models import Author, Post
+from .fixtures import make_engine
+from .server.app import AuthorAdmin, authenticate, create_app
+from .server.models import Author
 
 
 @pytest.fixture
@@ -55,9 +55,10 @@ def test_secret_key_is_required():
 def test_groups(admin):
     groups = admin.groups("admin")
     assert [(g["name"], g["icon"], [m.slug for m in g["models"]]) for g in groups] == [
-        ("Content", "article", ["post", "tag"]), ("People", "person", ["author"]), ("Access", "lock", ["secret"]), ("Insights", "bar_chart", [])]
+        ("Content", "article", ["post", "tag"]), ("People", "person", ["author"]), ("Access", "lock", ["secret"]),
+        ("Events", "confirmation_number", ["ticket", "seat"]), ("Insights", "bar_chart", [])]
     assert [p.slug for p in admin.groups("admin")[-1]["pages"]] == ["reports", "raw"]
-    assert [g["name"] for g in admin.groups("editor")] == ["Content", "People", "Insights"]
+    assert [g["name"] for g in admin.groups("editor")] == ["Content", "People", "Events", "Insights"]
 
 
 @pytest.mark.parametrize("admin_options", [{"groups": {"Content": "edit_note"}}])
@@ -83,7 +84,7 @@ def test_static_files_are_served(client):
 
 
 def run_mounted(path):
-    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+    engine = make_engine()
     return engine, TestClient(create_app(engine, path=path), follow_redirects=False)
 
 
@@ -160,7 +161,7 @@ def test_audit_table_is_created_on_first_use(admin_client, db):
 def test_audit_table_is_created_per_engine():
     """Engines that reuse a dead engine's id() must still get the log table."""
     for _ in range(5):
-        engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+        engine = make_engine()
         with TestClient(create_app(engine), follow_redirects=False) as c:
             c.post("/admin/login", data={"username": "admin", "password": "admin"})
             assert c.get("/admin/_log").status_code == HTTPStatus.OK

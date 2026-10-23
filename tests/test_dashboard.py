@@ -3,14 +3,12 @@ from http import HTTPStatus
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.pool import StaticPool
 
 import fastyfold.admin
 from fastyfold import Admin
 
 from .factories import author, post
-from .fixtures import login
+from .fixtures import login, make_engine
 from .server.app import AuthorAdmin, create_app
 from .server.models import Status
 
@@ -19,7 +17,7 @@ def test_dashboard(admin_client, db):
     db.add(post(title="Latest one", status=Status.published), post(status=Status.draft), author())
     page = admin_client.get("/admin/").text
     assert ", admin</h1>" in page
-    assert "You have <b class=\"text-accent\">2</b> posts across 4 models." in page
+    assert "You have <b class=\"text-accent\">2</b> posts across 6 models." in page
     assert "Posts by status" in page and "Latest posts" in page and "Latest one" in page
     assert "Press G then P" in page
 
@@ -49,7 +47,7 @@ def test_greeting(monkeypatch, hour, greeting):
 
 
 def test_dashboard_without_board_model():
-    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+    engine = make_engine()
     with TestClient(create_app(engine, models=[AuthorAdmin]), follow_redirects=False) as c:
         login(c)
         page = c.get("/admin/").text
@@ -58,7 +56,7 @@ def test_dashboard_without_board_model():
 
 
 def test_dashboard_without_models():
-    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+    engine = make_engine()
     with TestClient(create_app(engine, models=[]), follow_redirects=False) as c:
         login(c)
         r = c.get("/admin/")

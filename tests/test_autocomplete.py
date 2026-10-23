@@ -2,11 +2,9 @@ from http import HTTPStatus
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from .factories import author, post, tag
-from .fixtures import DB, login
+from .fixtures import DB, login, make_engine
 from .server.app import PostAdmin, create_app
 
 
@@ -60,7 +58,7 @@ def test_lookup_needs_sign_in(client):
 
 def test_lookup_for_unregistered_target():
     """Without a ModelAdmin for the target, lookups search its text columns and use str()."""
-    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+    engine = make_engine()
     with TestClient(create_app(engine, models=[PostAdmin]), follow_redirects=False) as c:
         login(c)
         db = DB(c.portal.call, c.app.state.admin)

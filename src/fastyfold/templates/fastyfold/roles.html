@@ -1,0 +1,47 @@
+{% extends "fastyfold/layout.html" %}
+{% import "fastyfold/_macros.html" as ui with context %}
+{% block title %}Roles · {{ admin.title }}{% endblock %}
+
+{% block content %}
+<div class="mt-6 pb-16">
+    <div class="flex flex-wrap items-center gap-3">
+        <h1 class="text-2xl font-extrabold">Roles</h1>
+        <span class="rounded-full bg-panel px-2.5 py-1 text-xs font-bold text-muted shadow-xs">{{ roles | length }}</span>
+        <span class="text-muted">What each person may see and do. Owners ({{ admin.owners | sort | join(', ') }}) can do everything.</span>
+        <a href="{{ admin.url('_roles', 'new') }}" class="pill-accent ml-auto pr-2" data-new>{{ ui.icon('add', '!text-[18px]') }}New role<span class="kbd ml-1 bg-white/20 text-white shadow-none">N</span></a>
+    </div>
+
+    <div class="mt-5 grid grid-cols-12 gap-5">
+        <section class="float col-span-12 overflow-hidden xl:col-span-8">
+            <table class="w-full">
+                <thead><tr class="text-left text-xs font-bold text-faint"><th class="py-4 pl-6">Role</th><th class="px-3 py-4">People</th><th class="px-3 py-4 text-right">Permissions</th></tr></thead>
+                <tbody>
+                    {% for r in roles %}
+                        <tr data-row data-url="{{ admin.url('_roles', r.id) }}" class="cursor-pointer border-t border-line transition hover:bg-soft/70 data-[active]:bg-soft" @click="location = $el.dataset.url">
+                            <td class="py-3 pl-6"><div class="flex items-center gap-3">{{ ui.avatar(r.name, 'size-9', 'rounded-xl') }}
+                                <div class="leading-tight"><a href="{{ admin.url('_roles', r.id) }}" class="font-semibold">{{ r.name }}</a>
+                                    {% if r.description %}<div class="text-xs text-faint">{{ r.description }}</div>{% endif %}</div></div></td>
+                            <td class="px-3 py-3 text-muted">{{ r.members | map(attribute='user') | join(', ') or '—' }}</td>
+                            <td class="px-3 py-3 text-right font-semibold">{{ r.grants | length }}</td>
+                        </tr>
+                    {% else %}
+                        <tr><td colspan="3" class="py-16 text-center text-muted">{{ ui.icon('shield_person', '!text-[40px] text-faint') }}
+                            <p class="mt-2 font-semibold">No roles yet</p><p class="mt-1">Until someone has a role, only owners can see anything.</p>
+                            <a href="{{ admin.url('_roles', 'new') }}" class="pill-accent mt-4">{{ ui.icon('add', '!text-[18px]') }}Create the first role</a></td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </section>
+        <section class="float col-span-12 p-6 xl:col-span-4">
+            <h2 class="font-bold">People</h2>
+            <ul class="mt-4 space-y-3">
+                {% for person, names in people.items() %}
+                    <li class="flex items-center gap-3">{{ ui.avatar(person, 'size-8', 'rounded-xl') }}<span class="flex-1 font-semibold">{{ person }}</span><span class="text-right text-xs text-muted">{{ names | join(', ') }}</span></li>
+                {% else %}
+                    <li class="text-muted">Add people to a role and they show up here.</li>
+                {% endfor %}
+            </ul>
+        </section>
+    </div>
+</div>
+{% endblock %}

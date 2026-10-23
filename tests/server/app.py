@@ -10,9 +10,13 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import func, select
 
 from fastyfold import Admin, ModelAdmin, action
+from fastyfold.audit import LogEntry
+from fastyfold.roles import Role
 
-from .models import Author, Base, Post, Secret, Status, Tag
+from .models import Author, Base, Post, Seat, Secret, Status, Tag, Ticket
 
+audit_metadata = LogEntry.metadata
+roles_metadata = Role.metadata
 USERS = {"admin": "admin", "editor": "editor"}
 
 
@@ -96,7 +100,20 @@ class SecretAdmin(ModelAdmin):
         return user == "admin"
 
 
-MODEL_ADMINS = (PostAdmin, AuthorAdmin, TagAdmin, SecretAdmin)
+class TicketAdmin(ModelAdmin):
+    model = Ticket
+    group = "Events"
+    icon = "confirmation_number"
+
+
+class SeatAdmin(ModelAdmin):
+    model = Seat
+    group = "Events"
+    icon = "event_seat"
+    list_filter = ["ticket_id"]
+
+
+MODEL_ADMINS = (PostAdmin, AuthorAdmin, TagAdmin, SecretAdmin, TicketAdmin, SeatAdmin)
 
 
 def create_app(engine, *, path: str = "/admin", models=MODEL_ADMINS, **options) -> FastAPI:
@@ -137,7 +154,11 @@ def create_app(engine, *, path: str = "/admin", models=MODEL_ADMINS, **options) 
 
     @asynccontextmanager
     async def lifespan(app):
+        # Start from empty tables, so a shared test database (FASTYFOLD_TEST_DB) behaves like a fresh one.
         async with engine.begin() as conn:
+            await conn.run_sync(audit_metadata.drop_all)
+            await conn.run_sync(roles_metadata.drop_all)
+            await conn.run_sync(Base.metadata.drop_all)
             await conn.run_sync(Base.metadata.create_all)
         yield
 

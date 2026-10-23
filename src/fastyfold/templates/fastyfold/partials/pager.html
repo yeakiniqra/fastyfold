@@ -1,7 +1,16 @@
 {% import "fastyfold/_macros.html" as ui with context %}
 {% if pages > 1 or total > 0 %}
 <div class="flex items-center justify-between gap-3 border-t border-line px-6 py-4">
-    <span class="text-muted">Page <b class="text-fg">{{ page }}</b> of <b class="text-fg">{{ pages }}</b></span>
+    <span class="flex flex-wrap items-center gap-x-4 gap-y-1 text-muted">
+        <span>Page <b class="text-fg">{{ page }}</b> of <b class="text-fg">{{ pages }}</b></span>
+        {% if ma.per_page_options | length > 1 and view != 'board' %}
+            <span class="flex items-center gap-1" data-per-page>Rows
+                {% for n in ma.per_page_options %}
+                    <a href="{{ admin.url(ma.slug, **dict(state, page=None, per_page=n if n != ma.per_page else None)) }}"
+                       class="rounded-full px-2 py-0.5 font-semibold {{ 'bg-fg text-panel' if n == per_page else 'hover:bg-soft' }}">{{ n }}</a>
+                {% endfor %}</span>
+        {% endif %}
+    </span>
     <div class="flex items-center gap-1">
         {% if page > 1 %}<a href="{{ admin.url(ma.slug, **dict(state, page=page - 1)) }}" class="flex size-9 items-center justify-center rounded-full text-muted hover:bg-soft" aria-label="Previous page">{{ ui.icon('chevron_left') }}</a>{% endif %}
         {% for n in range([1, page - 2] | max, [pages, page + 2] | min + 1) %}

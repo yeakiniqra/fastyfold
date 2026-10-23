@@ -1,0 +1,83 @@
+{% extends "fastyfold/layout.html" %}
+{% import "fastyfold/_macros.html" as ui with context %}
+{% block title %}{{ ('Role ' ~ role.name) if role else 'New role' }} · {{ admin.title }}{% endblock %}
+{% block back %}<a href="{{ admin.url('_roles') }}" data-back class="flex size-11 items-center justify-center rounded-full bg-panel shadow-xs hover:bg-soft" aria-label="Back to roles">{{ ui.icon('arrow_back') }}</a>{% endblock %}
+
+{% block content %}
+<form method="post" class="mt-6 pb-28" novalidate
+      x-data='{ grants: {{ values.grants | sort | list | tojson }},
+                toggle(keys) { this.grants = keys.every(k => this.grants.includes(k)) ? this.grants.filter(g => !keys.includes(g)) : [...new Set([...this.grants, ...keys])] } }'>
+    {{ ui.csrf_input() }}
+    <div class="flex items-center gap-4">
+        {{ ui.avatar(role.name if role else 'New role', 'size-14', 'rounded-2xl') }}
+        <div><h1 class="text-2xl font-extrabold">{{ role.name if role else 'New role' }}</h1>
+            <p class="mt-1 text-muted">Tick what people with this role may do. Someone with several roles gets all of them combined.</p></div>
+    </div>
+
+    <div class="mt-6 grid grid-cols-12 gap-5">
+        <section class="float col-span-12 p-7 xl:col-span-4">
+            <h2 class="font-bold">Role</h2>
+            <div class="mt-6 space-y-5">
+                <div><label class="field-label" for="f-name">Name <span class="text-accent">*</span></label>
+                    <input id="f-name" name="name" value="{{ values.name }}" class="field {{ '!border-rose-400' if errors.name }}" required maxlength="80">
+                    {% if errors.name %}<p class="mt-2 text-xs font-semibold text-rose-600 dark:text-rose-400">{{ errors.name }}</p>{% endif %}</div>
+                <div><label class="field-label" for="f-description">Description</label>
+                    <input id="f-description" name="description" value="{{ values.description }}" class="field" maxlength="200"></div>
+                <div><label class="field-label" for="f-members">People</label>
+                    <textarea id="f-members" name="members" rows="5" class="field h-auto py-3" placeholder="One username per line">{{ values.members }}</textarea>
+                    {% if suggestions %}<p class="hint">Known users: {{ suggestions | join(', ') }}</p>{% endif %}</div>
+            </div>
+        </section>
+
+        <section class="float col-span-12 overflow-hidden xl:col-span-8">
+            <div class="flex items-center justify-between px-7 pt-7"><h2 class="font-bold">Permissions</h2>
+                <span class="text-xs font-semibold text-muted"><span x-text="grants.length"></span> granted</span></div>
+            <div class="mt-4 overflow-x-auto">
+                <table class="w-full" data-matrix>
+                    <thead>
+                        <tr class="text-left text-xs font-bold text-faint">
+                            <th class="py-3 pl-7">Model or page</th>
+                            {% for p in perms %}
+                                <th class="px-2 py-3 text-center"><button type="button" class="capitalize hover:text-fg" data-column="{{ p }}"
+                                    @click='toggle({{ columns[p] | tojson }})'>{{ p }}</button></th>
+                            {% endfor %}
+                            <th class="px-2 py-3">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in matrix %}
+                            <tr class="border-t border-line" data-matrix-row="{{ row.slug }}">
+                                <td class="py-2.5 pl-7"><button type="button" class="flex items-center gap-2.5 text-left font-semibold hover:text-accent-ink" data-row-toggle
+                                    @click='toggle({{ row.grant_keys | tojson }})'>
+                                    {{ ui.icon(row.icon, '!text-[18px] text-faint') }}{{ row.label }}<span class="text-xs font-medium text-faint">{{ row.group }}</span></button></td>
+                                {% for p in perms %}
+                                    <td class="px-2 py-2.5 text-center">
+                                        {% if p in row.perms %}<input type="checkbox" name="grant" value="{{ row.slug }}:{{ p }}" x-model="grants" class="size-4 accent-[var(--ff-accent)]" aria-label="{{ row.label }}: {{ p }}">
+                                        {% else %}<span class="text-faint">·</span>{% endif %}
+                                    </td>
+                                {% endfor %}
+                                <td class="px-2 py-2.5">
+                                    <div class="flex flex-wrap gap-1.5">
+                                        {% for a, label in row.actions %}
+                                            <label class="cursor-pointer"><input type="checkbox" name="grant" value="{{ row.slug }}:{{ a }}" x-model="grants" class="peer sr-only" aria-label="{{ row.label }}: {{ label }}">
+                                                <span class="inline-flex h-7 items-center rounded-full border-2 border-line px-2.5 text-xs font-semibold text-muted peer-checked:border-accent peer-checked:bg-accent-soft peer-checked:text-accent-ink peer-focus-visible:ring-2 peer-focus-visible:ring-accent">{{ label }}</span></label>
+                                        {% else %}<span class="text-faint">—</span>{% endfor %}
+                                    </div>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <p class="px-7 py-4 text-xs text-muted">Click a model to tick its whole row, or a column heading to tick it everywhere. Without “view” a model stays hidden.</p>
+        </section>
+    </div>
+
+    <div class="fixed bottom-6 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full bg-rail py-2 pr-2 pl-5 text-white shadow-2xl" style="margin-left: 158px">
+        {% if errors %}<span class="flex items-center gap-1.5 text-sm font-semibold whitespace-nowrap text-amber-300">{{ ui.icon('warning', '!text-[18px]') }}Check the form</span><span class="mx-2 h-6 w-px bg-white/15"></span>{% endif %}
+        {% if role %}<button form="delete-role" class="pill h-10 text-rose-300 hover:bg-white/10" onclick='return confirm({{ ("Delete role " ~ role.name ~ "? Its people lose these permissions.") | tojson }})'>{{ ui.icon('delete', '!text-[18px]') }}Delete</button>{% endif %}
+        <button class="pill-accent h-10" data-save>{{ ui.icon('check', '!text-[18px]') }}Save role<span class="kbd bg-white/20 text-white shadow-none">⌘S</span></button>
+    </div>
+</form>
+{% if role %}<form id="delete-role" method="post" action="{{ admin.url('_roles', role.id, 'delete') }}">{{ ui.csrf_input() }}</form>{% endif %}
+{% endblock %}

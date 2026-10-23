@@ -1,10 +1,11 @@
 """Models the suite runs against. Between them they cover every column kind fastyfold maps."""
 
 import enum
-from datetime import date, datetime
+import uuid
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, Column, Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Table, Text, func
+from sqlalchemy import JSON, Boolean, Column, Date, DateTime, Enum, ForeignKey, Integer, Interval, LargeBinary, Numeric, String, Table, Text, Time, Uuid, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -23,7 +24,7 @@ class Author(Base):
     __tablename__ = "authors"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(100))
-    email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(200), nullable=True, unique=True)
     bio: Mapped[str | None] = mapped_column(Text, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     born: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -90,3 +91,25 @@ class Secret(Base):
 
     def __str__(self):
         return self.value
+
+
+class Ticket(Base):
+    """A UUID primary key and column types fastyfold only displays (Interval, LargeBinary)."""
+    __tablename__ = "tickets"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    code: Mapped[str] = mapped_column(String(20))
+    opens: Mapped[time | None] = mapped_column(Time, nullable=True)
+    window: Mapped[timedelta | None] = mapped_column(Interval, nullable=True)
+    blob: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+
+    def __str__(self):
+        return self.code
+
+
+class Seat(Base):
+    """A foreign key to a UUID key."""
+    __tablename__ = "seats"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    label: Mapped[str] = mapped_column(String(20))
+    ticket_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tickets.id"))
+    ticket: Mapped[Ticket] = relationship()

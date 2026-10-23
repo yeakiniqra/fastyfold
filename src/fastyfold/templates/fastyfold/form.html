@@ -48,7 +48,7 @@
         </div>
     {% else %}
         <input id="f-{{ f.name }}" name="{{ f.name }}" value="{{ v }}" class="field {{ bad }}" {{ 'disabled' if off }}
-               type="{{ {'int': 'number', 'decimal': 'number', 'date': 'date', 'datetime': 'datetime-local'}.get(f.kind, 'text') }}"
+               type="{{ {'int': 'number', 'decimal': 'number', 'date': 'date', 'time': 'time', 'datetime': 'datetime-local'}.get(f.kind, 'text') }}"
                {% if f.kind == 'decimal' %}step="any"{% endif %} {% if f.required %}required{% endif %}>
     {% endif %}
     {% if err %}<p class="mt-2 flex items-center gap-1 text-xs font-semibold text-rose-600 dark:text-rose-400">{{ ui.icon('error', '!text-[16px]') }}{{ err }}</p>
@@ -78,7 +78,7 @@
                    disabled=off, required=f.required) }}
 {%- else -%}
     <input {{ nameattr(inl, i, n, dynamic) }} value="{{ v }}" aria-label="{{ f.label }}" {{ 'disabled' if off }}
-           class="field h-10 min-w-24 {{ '!border-rose-400' if err }}" type="{{ {'int': 'number', 'decimal': 'number', 'date': 'date', 'datetime': 'datetime-local'}.get(f.kind, 'text') }}"
+           class="field h-10 min-w-24 {{ '!border-rose-400' if err }}" type="{{ {'int': 'number', 'decimal': 'number', 'date': 'date', 'time': 'time', 'datetime': 'datetime-local'}.get(f.kind, 'text') }}"
            {% if f.kind == 'decimal' %}step="any"{% endif %}>
 {%- endif -%}
 {%- if err %}<p class="mt-1 text-xs font-semibold text-rose-600 dark:text-rose-400">{{ err }}</p>{% endif -%}
@@ -126,7 +126,7 @@
                         <h2 class="font-bold">{{ title }}</h2>
                     </div>
                     <div class="mt-6 grid grid-cols-2 gap-5">
-                        {% for name in names if name in ma.fields and not ma.fields[name].readonly %}{{ widget(ma.fields[name]) }}{% endfor %}
+                        {% for name in names if name in ma.fields and name in ma.form_fields and not ma.fields[name].readonly %}{{ widget(ma.fields[name]) }}{% endfor %}
                     </div>
                 </section>
             {% endfor %}
@@ -231,6 +231,7 @@
             <span class="mx-2 h-6 w-px bg-white/15"></span>
         {% endif %}
         {% if can_delete %}<button form="delete-form" class="pill h-10 text-rose-300 hover:bg-white/10" onclick='return confirm({{ ("Delete " ~ ma.label(obj) ~ "? This cannot be undone.") | tojson }})'>{{ ui.icon('delete', '!text-[18px]') }}Delete</button>{% endif %}
+        {% if obj and ma.save_as and admin.can(user, 'add', ma) %}<button formaction="{{ admin.url(ma.slug, 'new') }}" name="_continue" value="1" class="pill h-10 hover:bg-white/10" data-save-as>Save as new</button>{% endif %}
         <button name="_another" value="1" class="pill h-10 hover:bg-white/10">Save &amp; add another</button>
         <button name="_continue" value="1" data-continue class="pill h-10 bg-white/10 hover:bg-white/20">Save &amp; keep editing</button>
         <button class="pill-accent h-10" data-save>{{ ui.icon('check', '!text-[18px]') }}Save<span class="kbd bg-white/20 text-white shadow-none">⌘S</span></button>

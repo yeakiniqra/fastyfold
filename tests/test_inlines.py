@@ -78,7 +78,7 @@ def test_cannot_touch_another_records_children(submit, db, parent):
     other = db.add(post(title="Other", comments=[comment(body="Not yours")]))
     theirs = db.get(Post, other.id, "comments").comments[0]
     submit(f"/admin/post/{parent.id}", post_data(parent, **{
-        f"comments-0-id": str(theirs.id), "comments-0-body": "Hijacked", "comments-0-likes": "0",
+        "comments-0-id": str(theirs.id), "comments-0-body": "Hijacked", "comments-0-likes": "0",
         "comments-1-id": str(theirs.id), "comments-1-body": "x", "comments-1-likes": "0", "comments-1-_delete": "1"}))
     assert db.get(Comment, theirs.id).body == "Not yours"
 

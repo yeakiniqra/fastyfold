@@ -7,7 +7,8 @@ import secrets
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 SESSION_COOKIE = "ff_session"
-SESSION_MAX_AGE = 14 * 24 * 3600
+SESSION_MAX_AGE = 14 * 24 * 3600      # "Keep me signed in"
+SESSION_SHORT_AGE = 24 * 3600         # otherwise: the cookie dies with the browser, the server-side row after a day
 
 
 class Signer:
@@ -17,14 +18,16 @@ class Signer:
         self._secret = secret_key.encode()
         self._serializer = URLSafeTimedSerializer(secret_key, salt="fastyfold-session")
 
-    def dump(self, user: str) -> str:
-        return self._serializer.dumps({"u": user, "n": secrets.token_hex(8)})
+    def dump(self, user: str, sid: str) -> str:
+        return self._serializer.dumps({"u": user, "s": sid})
 
-    def load(self, cookie: str | None) -> str | None:
+    def load(self, cookie: str | None) -> tuple[str, str] | None:
+        """(user, session id) from a cookie we signed, or None. The admin still checks the id is a live session."""
         if not cookie:
             return None
         try:
-            return self._serializer.loads(cookie, max_age=SESSION_MAX_AGE)["u"]
+            data = self._serializer.loads(cookie, max_age=SESSION_MAX_AGE)
+            return str(data["u"]), str(data["s"])
         except (BadSignature, KeyError, TypeError):
             return None
 
@@ -34,6 +37,10 @@ class Signer:
 
     def csrf_ok(self, cookie: str | None, token: str | None) -> bool:
         return bool(cookie and token) and hmac.compare_digest(self.csrf(cookie), token)
+
+
+def new_session_id() -> str:
+    return secrets.token_urlsafe(32)
 
 
 def hash_password(password: str, *, iterations: int = 600_000) -> str:

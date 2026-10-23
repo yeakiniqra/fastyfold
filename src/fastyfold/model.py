@@ -1,10 +1,12 @@
 """ModelAdmin: per-model options and the queries behind list, board and search."""
 
 import enum
+import inspect as inspect_
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Select, and_, func, inspect, or_, select
 from sqlalchemy.orm import selectinload
@@ -64,6 +66,11 @@ class ModelAdmin:
     schema: Any = None                 # optional Pydantic model used to validate forms
     ordering: str | None = None        # e.g. "-created_at"
     per_page: int = 25
+    per_page_options: list[int] = [25, 50, 100]
+    select_all_limit: int = 1000       # most rows a bulk action may touch via "select all matching"
+    column_labels: dict[str, str] = {} # {"total": "Amount"}; also names computed and dotted columns
+    exclude: list[str] = []            # kept off the form (and so never written)
+    save_as: bool = False              # a "Save as new" button on the edit form
 
     def __init__(self, admin: "Admin"):
         self.admin = admin
@@ -71,6 +78,9 @@ class ModelAdmin:
         self.pk = self.mapper.primary_key[0].key
         files = self.file_fields if isinstance(self.file_fields, dict) else dict.fromkeys(self.file_fields, "file")
         self.fields: dict[str, Field] = fields_for(self.mapper, self.choices, set(self.readonly_fields), files)
+        for n, text in self.column_labels.items():
+            if n in self.fields:
+                self.fields[n].label = text
         cls_name = self.model.__name__
         self.name = self.name or humanize(_snake(cls_name)).capitalize()
         self.name_plural = self.name_plural or _plural(self.name)
@@ -79,7 +89,8 @@ class ModelAdmin:
         self.list_display = self.list_display or cols[:6]
         self.search_fields = self.search_fields if self.search_fields is not None else [n for n, f in self.fields.items() if f.kind == "str"]
         self.list_filter = self.list_filter if self.list_filter is not None else [n for n, f in self.fields.items() if f.kind in ("choice", "bool", "date", "datetime")]
-        self.form_fields = self.form_fields or [n for n, f in self.fields.items() if not f.readonly and not f.auto]
+        self.form_fields = [n for n in self.form_fields or [n for n, f in self.fields.items() if not f.readonly and not f.auto]
+                            if n not in self.exclude]
         self.preview_fields = self.preview_fields or self.list_display
         self.export_fields = self.export_fields or self.list_display
         self.relations = [r.key for r in self.mapper.relationships if r.direction.name == "MANYTOONE"]
@@ -112,11 +123,27 @@ class ModelAdmin:
         """perm: view, add, change, delete, export, or an action name. Override per model."""
         return True
 
+    def has_object_permission(self, user: str, perm: str, obj) -> bool:
+        """Like has_permission, for one record: checked before it is shown, changed, deleted, moved or acted on.
+        To hide rows from lists, override get_query instead."""
+        return True
+
+    def get_query(self, request) -> Select:
+        """The rows this request may see. Every list, count, export, lookup, record fetch and action starts here,
+        so filtering it (by `request.state.admin_user`, a tenant id…) scopes the whole admin for this model."""
+        return self.base_query()
+
     async def save(self, session, obj, is_new: bool) -> None:
         session.add(obj)
 
     async def delete(self, session, obj) -> None:
         await session.delete(obj)
+
+    async def after_save(self, obj, is_new: bool) -> None:
+        """Runs after an add or change is committed: send a notification, clear a cache. Not part of the transaction."""
+
+    async def after_delete(self, obj) -> None:
+        """Runs after a delete is committed."""
 
     # ── values ────────────────────────────────────────────────────────────
     def pk_of(self, obj):
@@ -156,6 +183,8 @@ class ModelAdmin:
         return sorted(rest, key=lambda n: 0 if self.fields.get(n) and self.fields[n].kind == "decimal" else 1)
 
     def column_label(self, name: str) -> str:
+        if name in self.column_labels:
+            return self.column_labels[name]
         if name == self.pk:
             return "ID"
         if name in self.fields:
@@ -241,8 +270,8 @@ class ModelAdmin:
         joined.add(rel)
         return getattr(target, col)
 
-    def list_query(self, *, q: str = "", filters: dict[str, str] | None = None, sort: str | None = None) -> Select:
-        stmt = self.base_query()
+    def list_query(self, *, q: str = "", filters: dict[str, str] | None = None, sort: str | None = None, request=None) -> Select:
+        stmt = self.get_query(request) if request is not None else self.base_query()
         joined: set[str] = set()
         if q and self.search_fields:
             stmt = stmt.where(or_(*[self._column(n, joined).icontains(q, autoescape=True) for n in self.search_fields]))
@@ -331,12 +360,25 @@ class ModelAdmin:
         stmt = stmt if stmt is not None else select(self.model)
         return await session.scalar(select(func.count()).select_from(stmt.order_by(None).subquery())) or 0
 
-    async def board_counts(self, session) -> dict[str, int]:
+    async def board_counts(self, session, stmt: Select | None = None) -> dict[str, int]:
+        """Rows per board column, within `stmt` (default: the whole table)."""
         if not self.board_field:
             return {}
-        col = getattr(self.model, self.board_field)
+        sub = (stmt if stmt is not None else select(self.model)).order_by(None).subquery()
+        col = sub.c[self.mapper.get_property(self.board_field).columns[0].key]
         rows = await session.execute(select(col, func.count()).group_by(col))
         return {str(v.value if isinstance(v, enum.Enum) else v): n for v, n in rows}
+
+
+async def call_hook(fn, *args):
+    """Call a hook that may be sync or async."""
+    result = fn(*args)
+    return await result if inspect_.isawaitable(result) else result
+
+
+def db_message(exc) -> str:
+    """The database's own one-line reason for an IntegrityError, e.g. 'UNIQUE constraint failed: authors.email'."""
+    return str(getattr(exc, "orig", exc)).strip().splitlines()[0]
 
 
 def _cell(text: str) -> str:

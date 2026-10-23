@@ -29,6 +29,16 @@ class LogEntry(_Base):
         return json.loads(self.changes or "{}")
 
 
+class AdminSession(_Base):
+    """One row per signed-in browser. Signing out deletes it, so a copied cookie stops working at once."""
+    __tablename__ = "fastyfold_session"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user: Mapped[str] = mapped_column(String(150), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 async def ensure_table(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         await conn.run_sync(_Base.metadata.create_all)

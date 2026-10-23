@@ -40,17 +40,24 @@ That is the whole public API: `Admin`, `ModelAdmin` and `action`.
 
 ## 2. Request flow
 
-1. `Admin.mount(app, path)` adds an `APIRouter` and mounts `StaticFiles` at `{path}/static`.
-2. Every route except `/login` and static files depends on `Admin._user`. It reads the signed `ff_session` cookie (itsdangerous, `max_age` 14 days). If there is no valid session:
+1. `Admin.mount(app, path)` mounts `StaticFiles` at `{path}/static`, then the JSON API router if `api` is on (it must come before the admin router, whose `/{model}/{pk}` would match `/api/<model>`), then the admin `APIRouter`.
+   - Every admin route uses `AdminRoute` (`Admin._route_class`), a custom `APIRoute`. It turns `HTTPException` (and `RequestValidationError`) into the HTML `error.html` page for browsers, keeps JSON for fetch and API clients and short bodies for htmx, and adds `SECURITY_HEADERS` (no framing, `no-store`, `nosniff`, `same-origin` referrer). Being a route class, it never touches the host app's own handlers.
+2. Every route except `/login` and static files depends on `Admin._user`. It reads the signed `ff_session` cookie (itsdangerous; payload `{u: user, s: session id}`), then requires a live row in `fastyfold_session` (`audit.AdminSession`) with that id, user and a future `expires_at`. It sets `request.state.admin_user`. If there is no valid session:
    - Normal requests get a 303 redirect to `/login?next=…`.
    - htmx requests get `HX-Redirect`.
+   - Sign-in inserts the row (14 days with "remember", else 1 day and a browser-session cookie) and sweeps expired rows. Sign-out deletes it. `Admin.end_sessions(user)` deletes all of a user's rows.
+   - `Admin.current_user` is the same dependency, public, for the host app's routes.
 3. Every POST also runs `Admin._csrf`:
    - The form field `_csrf`, or the `X-CSRF-Token` header for htmx and fetch, must equal `csrf_token(session)`.
    - That token is an HMAC of the session cookie with `secret_key`.
    - `base.html` puts it in a `<meta>` tag, and `fastyfold.js` adds it to every htmx request.
-4. Permission check: `Admin.can(user, perm, model_admin)` calls `ModelAdmin.has_permission(user, perm)`. `perm` is one of `view`, `add`, `change`, `delete`, `export`, or an action name. Custom pages (`Page`) go through the same check with `view`. The default allows any signed-in user. Override it per model, or pass `Admin(permission=...)` to set it globally.
+4. Permission check: `Admin.can(user, perm, model_admin, obj=None)` calls the global `Admin(permission=...)`, then `ModelAdmin.has_permission(user, perm)`, then, for one record, `has_object_permission(user, perm, obj)`. `perm` is one of `view`, `add`, `change`, `delete`, `export`, or an action name. Custom pages (`Page`) go through the same check with `view`. The default allows any signed-in user. Override it per model, or pass `Admin(permission=...)` to set it globally.
 5. The view opens a session with `async with admin.session() as s` (an `async_sessionmaker` built from the user's engine), runs the query and renders a template.
+   - Every query of a model's rows starts from `ModelAdmin.get_query(request)` (row-level scoping). One record is fetched with `Admin._get(s, ma, pk, request, perm)`: inside the scope or 404, then `has_object_permission` or 403.
+   - Foreign-key and many-to-many values posted by a user are checked against the target's `get_query` (`Admin._objects`), so out-of-scope rows can't be linked.
 6. Writes go through `audit.record()` in the same transaction, then commit.
+   - An `IntegrityError` rolls back and becomes a form error (422) or a list message, worded with `db_message(e)`; the API returns 409.
+   - `after_save` / `after_delete` run after a successful commit. All hooks may be sync or async (`call_hook`).
 
 ## 3. Routes
 
@@ -73,6 +80,9 @@ All routes sit under the mount path.
 | GET | `/_search?q=` | JSON for the ⌘K palette | none |
 | GET | `/_log` | audit log list, with `?who=&model=&action=&days=` | `log.html` |
 | GET | `/_media/{key}` | uploaded files for `LocalStorage`; images inline, everything else as a sandboxed download | none |
+| GET, POST | `/_roles`, `/_roles/new`, `/_roles/{id}`, POST `/_roles/{id}/delete` | roles editor, owners only; with `Admin(owners=...)` | `roles.html`, `role_form.html` |
+| GET, POST | `/api/{model}` | JSON list (`q`, `sort`, `page`, `per_page` ≤ 100, `f_<field>`) and create; only with `Admin(api=True)` | JSON |
+| GET, PATCH, DELETE | `/api/{model}/{pk}` | JSON read, partial update, delete | JSON |
 
 `{model}` is `ModelAdmin.slug`, which defaults to the lower-cased model class name. Models and pages share one slug namespace; `register()` and `page()` refuse a taken or reserved slug.
 
@@ -95,7 +105,10 @@ All routes sit under the mount path.
 | Text, String (>255) | `text` | textarea |
 | Boolean | `bool` | toggle |
 | Date | `date` | date |
+| Time | `time` | time |
 | DateTime | `datetime` | datetime-local |
+| Uuid (incl. postgresql.UUID) | `uuid` | text; parsed with `uuid.UUID` |
+| Interval, ARRAY, LargeBinary, anything else | `other` | none: shown read-only, never written |
 | JSON | `json` | monospace textarea |
 | Enum, or `ModelAdmin.choices[name]` | `choice` | radio pills (≤5 options) or select |
 | ForeignKey column | `fk` | autocomplete (`ui.combobox`) fed by `/_lookup`, labelled with `admin.label(obj)` |
@@ -140,6 +153,25 @@ Relations and files in `_save`:
 - **m2m:** the posted ids (`form.getlist(name)`) must all exist, else "Select a valid option."; the relationship is replaced as a whole.
 - **Inlines:** rows post as `<inline>-<i>-<field>`, plus `<inline>-<i>-id` for existing children and `<inline>-<i>-_delete`. Indices may have gaps (rows added in the browser). Blank new rows are dropped, ids that aren't this record's children are ignored, and the audit entry gets `{"items": [None, "1 added, 2 changed"]}`. Deleting the parent relies on the relationship's own cascade.
 - **Files:** `storage.check_upload` enforces `max_upload` and, for images, the real file signature. New files are saved as `<slug>/<random>.<ext>`; the replaced or removed file is deleted after commit, and so are a deleted record's files.
+
+Type notes: a `TypeDecorator` is classified by its `impl`. A foreign key's `key_kind` is the kind of its own column (int, str or uuid), so string and UUID keys parse correctly. `_save` and the API share `Admin._assign` for setting values and computing the audit `changes`.
+
+## 4c. Roles (`roles.py`)
+
+`Admin(owners=[...])` turns roles on. The pieces:
+
+- **Tables:** `fastyfold_role` (name, description), `fastyfold_role_grant` (role, model or page slug, perm) and `fastyfold_role_member` (role, user). They live on their own `MetaData` and are created by `Admin.session()` only when roles are on. Collections use `lazy="raise"`, so load them with `selectinload`.
+- **Per-request grants:** `Admin._signed_in` (called by `_user` and by the API's auth) loads the user's `(slug, perm)` pairs into the `roles.current_grants` ContextVar, with one query. FastAPI awaits async dependencies in the endpoint's task, so the endpoint and its templates see the value, and each request starts empty.
+- **The check:** `Admin.can` checks the global hook, then the grants (owners skip this), then `has_permission`, then `has_object_permission`. No grant means no access, which also hides the model or page from navigation.
+- **The editor:** the routes are owners only and every POST needs CSRF. `roles.matrix(admin)` lists every model and page with its perms and actions. Posted grants are filtered against it, so unknown pairs are dropped. Changes are audited with model `_roles`, and `Admin._log_models` shows those entries to owners only.
+
+## 4b. JSON API (`api.py`)
+
+`api.build(admin)` runs at mount time and returns an `APIRouter` with one set of routes per registered model.
+
+- **Schemas** (`api.schemas`): `<Model>Read` (every field but `other`; m2m as a list of keys), `<Model>Create` (writable form fields; required unless the column has a default), `<Model>Update` (all optional; `exclude_unset` makes PATCH partial) and `<Model>Page` (`items`, `total`, `page`, `per_page`). `choice` becomes a `Literal`.
+- **Writes** run the same steps as the form: choice and fk parsing, the target-scope check, `ModelAdmin.schema` (on the merged record, so a PATCH validates as a whole), `_assign`, `save`, audit, commit, `after_save`. The response is reloaded with `populate_existing`, so server defaults are filled in.
+- **Auth:** with `api_auth` it uses that dependency, and no CSRF is needed because the credentials don't ride on cookies. Otherwise it uses the admin session, which returns 401 instead of a redirect and requires `X-CSRF-Token` on writes.
 
 ## 5. List views
 
@@ -209,4 +241,6 @@ Keys are ignored while focus is in an input, except `⌘K`, `⌘S` and `Esc`.
 | A screen for one app | `@admin.page(...)` in that app, no fastyfold change needed |
 | New ModelAdmin option | class attribute with default in `model.py`, document in README + section 4 here |
 | Visual tweak | `styles/fastyfold.css` or template, then rebuild the CSS (section 8) |
-| Permission rule | `ModelAdmin.has_permission` or `Admin(permission=...)` |
+| Permission rule | `ModelAdmin.has_permission`, `has_object_permission`, or `Admin(permission=...)` |
+| Per-user / tenant data | `ModelAdmin.get_query(request)` |
+| Change a built-in template | `Admin(templates_dir=...)`; extend `original/fastyfold/<name>.html` |

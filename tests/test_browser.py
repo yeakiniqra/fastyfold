@@ -15,13 +15,11 @@ pytest.importorskip("playwright")
 
 import uvicorn  # noqa: E402
 from playwright.sync_api import expect  # noqa: E402
-from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
-from sqlalchemy.pool import StaticPool  # noqa: E402
 
 from fastyfold.security import SESSION_COOKIE  # noqa: E402
 
 from .factories import PNG, author, comment, post, tag  # noqa: E402
-from .fixtures import DB  # noqa: E402
+from .fixtures import DB, make_engine  # noqa: E402
 from .server.app import create_app  # noqa: E402
 from .server.models import Author, Post, Status  # noqa: E402
 
@@ -29,7 +27,7 @@ from .server.models import Author, Post, Status  # noqa: E402
 @pytest.fixture
 def live(admin_options):
     """The test site served by uvicorn on a free port, in a background thread."""
-    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+    engine = make_engine()
     app = create_app(engine, **admin_options)
     server = uvicorn.Server(uvicorn.Config(app, port=0, log_level="warning"))
     loop = asyncio.new_event_loop()
@@ -54,7 +52,8 @@ def live(admin_options):
 def page(page, live):
     """A signed-in admin page. External fonts are blocked so tests never wait on the network."""
     page.route(re.compile(r"fonts\.(googleapis|gstatic)\.com"), lambda route: route.abort())
-    page.context.add_cookies([{"name": SESSION_COOKIE, "value": live.admin.signer.dump("admin"), "url": live.url}])
+    r = page.request.post(live.url + "/admin/login", form={"username": "admin", "password": "admin"}, max_redirects=0)
+    assert r.status == 303 and SESSION_COOKIE in {c["name"] for c in page.context.cookies()}
     page.set_default_timeout(5000)
     return page
 
@@ -667,3 +666,38 @@ def test_export_download(page, go, live):
         page.get_by_role("link", name="Export").click()
     assert dl.value.suggested_filename == "post.csv"
     assert "Exported" in open(dl.value.path(), encoding="utf-8").read()
+
+
+######################################################################
+# Roles editor
+######################################################################
+@pytest.mark.parametrize("admin_options", [{"owners": ["admin"]}])
+def test_roles_matrix(page, go, live):
+    from sqlalchemy import select
+
+    from fastyfold.roles import RoleGrant, RoleMember
+
+    go("/admin/_roles/new")
+    page.fill("#f-name", "Editors")
+    page.fill("#f-members", "editor")
+    post_row = page.locator('[data-matrix-row="post"] [data-row-toggle]')
+    post_row.click()
+    expect(page.get_by_label("Posts: delete")).to_be_checked()
+    expect(page.get_by_label("Posts: Publish")).to_be_checked()
+    post_row.click()
+    expect(page.get_by_label("Posts: delete")).not_to_be_checked()
+    page.locator('[data-column="view"]').click()
+    expect(page.get_by_label("Reports: view")).to_be_checked()
+    page.get_by_label("Authors: view").uncheck()
+    page.locator('[data-matrix-row="post"]').get_by_text("Publish", exact=True).click()   # action pills are labels
+    expect(page.get_by_label("Posts: Publish")).to_be_checked()
+    expect(page.get_by_text("granted")).to_contain_text(str(len(live.admin.models) + len(live.admin.pages)))
+    page.keyboard.press("Control+s")
+    expect(page).to_have_url(re.compile(r"/admin/_roles\?msg=Saved"))
+
+    async def saved():
+        async with live.admin.session() as s:
+            return (set(await s.execute(select(RoleGrant.model, RoleGrant.perm))), set(await s.scalars(select(RoleMember.user))))
+    grants, members = live.db.run(saved)
+    views = {(slug, "view") for slug in [*live.admin.models, *live.admin.pages]} - {("author", "view")}
+    assert grants == views | {("post", "publish")} and members == {"editor"}

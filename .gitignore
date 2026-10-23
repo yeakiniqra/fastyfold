@@ -6,3 +6,5 @@ dist/
 *.db
 .pytest_cache/
 design/
+.coverage
+htmlcov/

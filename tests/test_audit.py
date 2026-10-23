@@ -2,6 +2,7 @@ from http import HTTPStatus
 
 import pytest
 
+from fastyfold import audit
 from fastyfold.audit import LogEntry
 
 from .factories import author, post
@@ -48,9 +49,12 @@ def test_entries_are_by_the_signed_in_user(editor_client, submit, db):
     assert db.log()[0].user == "editor"
 
 
-def test_long_repr_is_truncated(submit, db, admin_client):
-    p = db.add(post(title="x" * 250))
-    submit(f"/admin/post/{p.id}/delete")
+def test_long_repr_is_truncated(db, admin_client):
+    async def go():
+        async with db.admin.session() as s:
+            audit.record(s, user="u", action="change", model="post", obj_id=1, obj_repr="x" * 250)
+            await s.commit()
+    db.run(go)
     assert len(db.log()[0].object_repr) == 200
 
 

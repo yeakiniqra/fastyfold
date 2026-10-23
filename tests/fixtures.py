@@ -1,14 +1,32 @@
+import os
+
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import selectinload
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 from fastyfold import audit
 from fastyfold.security import SESSION_COOKIE
 
-from .server.app import create_app
+from .server.app import MODEL_ADMINS, create_app
+
+TEST_DB = os.environ.get("FASTYFOLD_TEST_DB")   # e.g. postgresql+asyncpg://postgres:ff@localhost:55432/ff
+
+
+def make_engine():
+    """A fresh in-memory SQLite database, or FASTYFOLD_TEST_DB (tables are reset by the test app's lifespan)."""
+    if TEST_DB:
+        return create_async_engine(TEST_DB, poolclass=NullPool)
+    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def enforce_foreign_keys(conn, _):      # SQLite ignores them by default; Postgres doesn't
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+    return engine
 
 
 def login(client, username="admin", password=None, **data):
@@ -59,9 +77,14 @@ def admin_options():
 
 
 @pytest.fixture
-def app(admin_options):
-    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
-    return create_app(engine, **admin_options)
+def models():
+    """The ModelAdmins on the site under test. Parametrize or override to swap in variants."""
+    return MODEL_ADMINS
+
+
+@pytest.fixture
+def app(admin_options, models):
+    return create_app(make_engine(), models=models, **admin_options)
 
 
 @pytest.fixture
