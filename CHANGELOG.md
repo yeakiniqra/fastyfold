@@ -2,6 +2,19 @@
 
 All notable changes to fastyfold. The newest release is at the top.
 
+## 0.2.1
+
+Fixes found by running fastyfold on a live project (a read-only backoffice over a support bot's data).
+
+### Fixed
+- **`fastyfold.__version__`** reads the installed package's version. It was stuck at `"0.1.0"`, even in 0.2.0.
+- **The split-view preview** only offers *Edit*, *Delete* and actions the user may actually perform, checked
+  per record (`has_object_permission`). Read-only users no longer see an *Edit* button that leads nowhere, and the
+  *Quick actions* section disappears when there's nothing to offer.
+- **Long text in the preview** (`Text` and `JSON` fields) is shown in full as a readable paragraph instead of being
+  cut off in a small tile.
+- **Board cards** label the extra values they show (e.g. "Latency (ms)", "Tokens") instead of bare numbers.
+
 ## 0.2.0
 
 The release that makes fastyfold ready for real teams. We compared it against sqladmin, starlette-admin, fastadmin and fastapi-amis-admin, then closed the gaps that mattered while keeping what it already did better: CSRF everywhere, an audit log, the board, split and ⌘K views, and no frontend build.

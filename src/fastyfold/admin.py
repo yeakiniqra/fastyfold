@@ -668,7 +668,9 @@ class Admin:
             async with self.session() as s:
                 obj = await self._get(s, ma, pk, request)
                 history = await audit.recent(s, model=ma.slug, object_id=pk, limit=5)
-            return self._render(request, "partials/preview.html", user=user, ma=ma, obj=obj, history=history)
+            return self._render(request, "partials/preview.html", user=user, ma=ma, obj=obj, history=history,
+                                can_change=self.can(user, "change", ma, obj), can_delete=self.can(user, "delete", ma, obj),
+                                actions=[a for a in ma.actions.values() if self.can(user, a["name"], ma, obj)])
 
         @r.get("/{slug}/{pk}", response_class=HTMLResponse, include_in_schema=False)
         async def edit_form(request: Request, slug: str, pk: str, user: str = User):

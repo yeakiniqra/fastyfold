@@ -162,7 +162,9 @@
                             <div class="mt-3 flex items-center gap-2.5">{{ ui.avatar(ma.avatar_text(obj), 'size-8', 'rounded-xl') }}
                                 <div class="min-w-0 leading-tight"><div class="truncate font-semibold">{{ ma.label(obj) }}</div>{% if ma.subtitle(obj) %}<div class="truncate text-xs text-faint">{{ ma.subtitle(obj) }}</div>{% endif %}</div></div>
                             {% set extra = ma.card_fields() %}
-                            {% if extra %}<div class="mt-3 flex items-center justify-between gap-2"><b class="truncate text-base">{{ ui.cell(ma, extra[0], obj) }}</b>{% if extra | length > 1 %}<span class="truncate text-xs text-muted">{{ ui.cell(ma, extra[1], obj) }}</span>{% endif %}</div>{% endif %}
+                            {% if extra %}<div class="mt-3 flex items-end justify-between gap-2" data-card-fields>
+                                <span class="min-w-0"><span class="block text-[11px] font-semibold text-faint">{{ ma.column_label(extra[0]) }}</span><b class="block truncate text-base">{{ ui.cell(ma, extra[0], obj) }}</b></span>
+                                {% if extra | length > 1 %}<span class="min-w-0 text-right"><span class="block text-[11px] font-semibold text-faint">{{ ma.column_label(extra[1]) }}</span><span class="block truncate text-xs text-muted">{{ ui.cell(ma, extra[1], obj) }}</span></span>{% endif %}</div>{% endif %}
                         </a>
                     {% endfor %}
                     {% if can_add %}<a href="{{ admin.url(ma.slug, 'new') }}" class="flex w-full items-center justify-center gap-1 rounded-2xl border-2 border-dashed border-line py-3 text-sm font-semibold text-faint hover:border-faint">Drop here or <span class="text-accent-ink">add</span></a>{% endif %}
