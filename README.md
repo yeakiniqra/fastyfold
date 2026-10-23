@@ -75,6 +75,8 @@ It installs with `pip`, and there is no Node build on your side.
 pip install "fastyfold @ git+https://github.com/yeakiniqra/fastyfold@v0.3.0"
 ```
 
+fastyfold reads **SQLAlchemy 2.0 models on an async engine**. [SQLModel](https://sqlmodel.tiangolo.com) models work too, since they are SQLAlchemy models. Using another ORM, raw SQL or no database? See [Not using SQLAlchemy?](#not-using-sqlalchemy)
+
 ## Quick start
 
 Add three lines where you create your FastAPI app:
@@ -129,6 +131,66 @@ async def authenticate(username: str, password: str) -> str | None:
     return user.name if user and user.check_password(password) else None
 
 admin = Admin(engine, authenticate=authenticate, owners=["nusrat"])   # owners: full access; others get roles
+```
+
+## Not using SQLAlchemy?
+
+fastyfold builds its forms, filters, search and API from SQLAlchemy models, and keeps its own tables (users, sessions, audit log) in a SQL database. What that means for your project:
+
+| Your project uses | Works? |
+|---|---|
+| SQLAlchemy 2.0 (async) | Yes |
+| SQLModel | Yes. Pass an async engine: `create_async_engine("postgresql+asyncpg://...")` |
+| Tortoise ORM, Piccolo, Peewee, raw SQL (asyncpg, databases) on PostgreSQL, MySQL or SQLite | Yes, with the workaround below |
+| MongoDB (Beanie, Motor), Redis or another non-SQL store | No |
+| No database at all | Custom pages and widgets only, see below |
+
+**Workaround: describe your existing tables for the admin.** Your tables are already there, so write a small SQLAlchemy class for each table you want in the admin. Your app keeps using its own ORM; these classes are only for fastyfold.
+
+```python
+# admin_models.py
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Order(Base):
+    __tablename__ = "order"                 # the existing table's name
+    id: Mapped[int] = mapped_column(primary_key=True)
+    customer: Mapped[str]
+    total: Mapped[float]
+    status: Mapped[str]
+```
+
+```python
+# where you create your FastAPI app
+from fastyfold import Admin
+from .admin_models import Order
+
+admin = Admin("postgresql+asyncpg://user:pass@localhost/shop")    # the same database your app uses
+admin.register(Order)
+admin.mount(app)
+```
+
+- Use the async driver for your database: `postgresql+asyncpg://`, `mysql+aiomysql://` or `sqlite+aiosqlite:///`, installed with `pip install asyncpg` (or `aiomysql`, `aiosqlite`).
+- List only the columns you want to see or edit. Edits leave the other columns alone. To create records, include every `NOT NULL` column that has no database default.
+- Every table needs a single-column primary key.
+- Don't call `Base.metadata.create_all()`. The tables already exist. fastyfold creates only its own `fastyfold_*` tables.
+- Edits made in the admin go straight to the database, so your ORM's own signals and save hooks don't run. Put that logic in the ModelAdmin's `save` or `after_save` instead (see [ModelAdmin options](#modeladmin-options)).
+
+**No database at all.** fastyfold still needs somewhere to keep its users and sessions. Give it a SQLite file and use [custom pages and dashboard widgets](#custom-pages-and-dashboard-widgets) for your screens:
+
+```python
+# pip install aiosqlite
+admin = Admin("sqlite+aiosqlite:///admin.db")
+
+@admin.page("Reports", icon="bar_chart")
+async def reports(request, user):
+    return "<p>...</p>"
+
+admin.mount(app)
 ```
 
 ## Try the demo
