@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.orm import selectinload
 from sqlalchemy.pool import StaticPool
 
 from fastyfold import audit
@@ -30,10 +31,11 @@ class DB:
         self.run(go)
         return objs[0] if len(objs) == 1 else objs
 
-    def get(self, model, pk):
+    def get(self, model, pk, *relations):
+        """One row by primary key, with `relations` (names) loaded since async sessions can't lazy-load."""
         async def go():
             async with self.admin.sessionmaker() as s:
-                return await s.get(model, pk)
+                return await s.get(model, pk, options=[selectinload(getattr(model, r)) for r in relations])
         return self.run(go)
 
     def count(self, model) -> int:

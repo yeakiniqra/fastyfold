@@ -1,9 +1,13 @@
 """The admin the suite runs against: `create_app(engine)` returns a FastAPI app with it mounted."""
 
+import tempfile
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from markupsafe import escape
 from pydantic import BaseModel, field_validator
+from sqlalchemy import func, select
 
 from fastyfold import Admin, ModelAdmin, action
 
@@ -33,12 +37,16 @@ class PostAdmin(ModelAdmin):
     group = "Content"
     icon = "article"
     key = "p"
-    list_display = ["id", "title", "author", "status", "views", "published_at"]
+    list_display = ["id", "title", "author", "status", "views", "published_at", "reach"]
     search_fields = ["title", "author.name"]
-    list_filter = ["status", "published_at"]
+    list_filter = ["status", "published_at", "author_id", "views"]
     board_field = "status"
     colors = {"published": "#10b981"}
     schema = PostIn
+    inlines = [("comments", ["body", "author_id", "likes", "approved"])]
+
+    def reach(self, obj):
+        return f"{obj.views * 3:,} people"
 
     def __init__(self, admin):
         super().__init__(admin)
@@ -67,7 +75,8 @@ class AuthorAdmin(ModelAdmin):
     group = "People"
     icon = "person"
     key = "a"
-    fieldsets = [("Profile", ["name", "email", "active"]), ("About", ["bio", "born"])]
+    fieldsets = [("Profile", ["name", "email", "active"]), ("About", ["bio", "born"]), ("Files", ["photo", "cv"])]
+    file_fields = {"photo": "image", "cv": "file"}
 
 
 class TagAdmin(ModelAdmin):
@@ -91,9 +100,40 @@ MODEL_ADMINS = (PostAdmin, AuthorAdmin, TagAdmin, SecretAdmin)
 
 
 def create_app(engine, *, path: str = "/admin", models=MODEL_ADMINS, **options) -> FastAPI:
+    options.setdefault("media_dir", tempfile.mkdtemp())
     admin = Admin(engine, secret_key="test-secret", authenticate=authenticate, title="Test Site", **options)
     for cls in models:
         admin.register(cls)
+
+    @admin.page("Reports", icon="bar_chart", group="Insights", key="r")
+    async def reports(request, user):
+        if request.method == "POST":
+            form = await request.form()
+            return f"<p id='echo'>Got {escape(form.get('note', ''))}</p>"
+        csrf = admin.csrf(request)
+        return (f"<p id='hello'>Hello {escape(user)}</p><form method='post'><input type='hidden' name='_csrf' value='{csrf}'>"
+                "<input name='note'><button>Send</button></form>")
+
+    @admin.page("Raw", group="Insights")
+    async def raw(request, user):
+        return JSONResponse({"user": user})
+
+    @admin.widget("Total views", icon="visibility")
+    async def total_views(session, user):
+        return {"value": await session.scalar(select(func.coalesce(func.sum(Post.views), 0))), "caption": "across all posts"}
+
+    @admin.widget("Authors", span=4)
+    async def authors_count(session, user):
+        return await session.scalar(select(func.count()).select_from(Author))
+
+    @admin.widget("Views by status", span=6)
+    async def by_status(session, user):
+        rows = await session.execute(select(Post.status, func.sum(Post.views)).group_by(Post.status))
+        return [(s.value.title(), n) for s, n in rows]
+
+    @admin.widget("Owner only")
+    async def owner_only(session, user):
+        return "Only the owner sees this" if user == "admin" else None
 
     @asynccontextmanager
     async def lifespan(app):

@@ -1,0 +1,9 @@
+{% extends "fastyfold/layout.html" %}
+{% block title %}{{ page.name }} · {{ admin.title }}{% endblock %}
+
+{% block content %}
+<div class="mt-6">
+    <h1 class="text-2xl font-extrabold">{{ page.name }}</h1>
+    <div class="mt-5">{{ body }}</div>
+</div>
+{% endblock %}

@@ -24,7 +24,7 @@ def test_new_form_prefills_defaults(admin_client, writer):
     page = admin_client.get("/admin/post/new").text
     assert 'name="views" value="0"' in page
     assert 'name="status" value="draft" class="peer sr-only" checked' in page
-    assert f'<option value="{writer.id}" >Writer</option>' in page
+    assert 'name: "author_id", url: "/admin/post/_lookup/author_id", multiple: false, selected: []' in page
     assert "New post" in page and "data-save" in page
 
 

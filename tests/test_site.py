@@ -16,8 +16,8 @@ from .server.models import Author, Post
 
 
 @pytest.fixture
-def bare():
-    return Admin(create_async_engine("sqlite+aiosqlite://"), secret_key="k", authenticate=authenticate)
+def bare(tmp_path):
+    return Admin(create_async_engine("sqlite+aiosqlite://"), secret_key="k", authenticate=authenticate, media_dir=tmp_path)
 
 
 ######################################################################
@@ -55,8 +55,9 @@ def test_secret_key_is_required():
 def test_groups(admin):
     groups = admin.groups("admin")
     assert [(g["name"], g["icon"], [m.slug for m in g["models"]]) for g in groups] == [
-        ("Content", "article", ["post", "tag"]), ("People", "person", ["author"]), ("Access", "lock", ["secret"])]
-    assert [g["name"] for g in admin.groups("editor")] == ["Content", "People"]
+        ("Content", "article", ["post", "tag"]), ("People", "person", ["author"]), ("Access", "lock", ["secret"]), ("Insights", "bar_chart", [])]
+    assert [p.slug for p in admin.groups("admin")[-1]["pages"]] == ["reports", "raw"]
+    assert [g["name"] for g in admin.groups("editor")] == ["Content", "People", "Insights"]
 
 
 @pytest.mark.parametrize("admin_options", [{"groups": {"Content": "edit_note"}}])
@@ -143,7 +144,7 @@ def test_site_link(admin_client):
 def test_jump_keys(admin_client):
     page = admin_client.get("/admin/").text
     jumps = json.loads(re.search(r"data-jumps='([^']*)'", page).group(1))
-    assert jumps == {"d": "/admin/", "p": "/admin/post", "a": "/admin/author"}
+    assert jumps == {"d": "/admin/", "p": "/admin/post", "a": "/admin/author", "r": "/admin/reports"}
 
 
 def test_rail_marks_current_group(admin_client):

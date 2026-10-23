@@ -25,10 +25,53 @@
 {%- endmacro %}
 
 {% macro cell(ma, name, obj) -%}
+{%- set kind = ma.fields[name].kind if name in ma.fields else '' -%}
 {%- if ma.is_badge(name) -%}{{ badge(ma, name, obj) }}
-{%- elif ma.fields.get(name) and ma.fields[name].kind == 'bool' -%}
+{%- elif kind == 'bool' -%}
     {{ icon('check_circle' if ma.value(obj, name) else 'cancel', 'text-emerald-500' if ma.value(obj, name) else 'text-faint', fill=True) }}
+{%- elif kind == 'image' and ma.value(obj, name) -%}
+    <img src="{{ admin.file_url(ma.value(obj, name)) }}" alt="" class="inline-block size-9 rounded-xl object-cover">
+{%- elif kind == 'file' and ma.value(obj, name) -%}
+    <a href="{{ admin.file_url(ma.value(obj, name)) }}" class="inline-flex items-center gap-1 font-semibold text-accent-ink hover:underline">{{ icon('attach_file', '!text-[16px]') }}{{ ma.display(obj, name) }}</a>
 {%- else -%}{{ ma.display(obj, name) }}{%- endif -%}
+{%- endmacro %}
+
+{# Autocomplete for fk / m2m. `name_js` is a JS expression, so inline rows added in the browser can build their own name.
+   Options come from `url` (the /_lookup endpoint). Attributes holding JSON are single-quoted: tojson escapes ' but not ". #}
+{% macro combobox(name_js, selected, url, multiple=False, disabled=False, required=False, id=None) -%}
+<div class="relative" x-data='ffCombo({ name: {{ name_js }}, url: {{ url | tojson }}, multiple: {{ multiple | tojson }}, selected: {{ selected | tojson }}, disabled: {{ disabled | tojson }}, required: {{ required | tojson }} })'
+     @click.outside="open = false" @keydown.escape="escape($event)">
+    <template x-if="!multiple"><input type="hidden" :name="name" :value="selected.length ? selected[0].value : ''"></template>
+    <template x-for="s in (multiple ? selected : [])" :key="s.value"><input type="hidden" :name="name" :value="s.value"></template>
+    <div class="field flex h-auto min-h-11 flex-wrap items-center gap-1.5 py-1.5 pr-2" :class="open && '!border-accent !bg-panel'">
+        <template x-for="s in (multiple ? selected : [])" :key="s.value">
+            <span class="inline-flex h-7 items-center gap-1 rounded-full bg-accent-soft pr-1 pl-3 text-xs font-semibold text-accent-ink" data-chip>
+                <span x-text="s.label"></span>
+                <button type="button" class="flex size-5 items-center justify-center rounded-full hover:bg-accent/15" @click="remove(s)" :disabled="disabled" :aria-label="'Remove ' + s.label">{{ icon('close', '!text-[14px]') }}</button>
+            </span>
+        </template>
+        <button type="button" x-ref="button" {% if id %}id="{{ id }}"{% endif %} class="min-w-24 flex-1 py-1 text-left disabled:cursor-not-allowed" @click="toggle()" @keydown="open && key($event)" :disabled="disabled"
+                aria-haspopup="listbox" :aria-expanded="open"
+                :class="(multiple || !selected.length) && 'text-faint'"
+                x-text="multiple ? (selected.length ? 'Add…' : 'Select…') : (selected.length ? selected[0].label : 'Select…')"></button>
+        {{ icon('unfold_more', '!text-[18px] text-faint') }}
+    </div>
+    <div x-show="open" x-cloak x-transition.opacity class="float absolute inset-x-0 top-full z-30 mt-2 p-2">
+        <input x-ref="q" x-model="q" @input.debounce.150ms="fetch()" @keydown="key($event)" class="field h-10" placeholder="Search…"
+               autocomplete="off" role="combobox" aria-autocomplete="list" :aria-expanded="open">
+        <ul class="mt-2 max-h-60 overflow-y-auto" role="listbox">
+            <template x-for="(it, n) in items" :key="it.value">
+                <li role="option" :aria-selected="n === hi" @mousedown.prevent="pick(it)" @mouseenter="hi = n"
+                    class="flex cursor-pointer items-center gap-2 rounded-xl px-3 py-2" :class="n === hi ? 'bg-accent-soft text-accent-ink' : ''">
+                    <span class="flex-1 truncate" x-text="it.label"></span>
+                    <span x-show="isSelected(it)">{{ icon('check', '!text-[18px]') }}</span>
+                </li>
+            </template>
+            <li x-show="loaded && !items.length" class="px-3 py-2 text-muted">No matches</li>
+        </ul>
+        <button type="button" x-show="!multiple && selected.length && !required" class="mt-1 w-full rounded-xl px-3 py-2 text-left text-muted hover:bg-soft" @click="clear()">Clear</button>
+    </div>
+</div>
 {%- endmacro %}
 
 {% macro csrf_input() -%}<input type="hidden" name="_csrf" value="{{ csrf }}">{%- endmacro %}

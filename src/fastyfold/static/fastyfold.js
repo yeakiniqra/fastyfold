@@ -7,6 +7,56 @@
     document.addEventListener('htmx:configRequest', e => { e.detail.headers['X-CSRF-Token'] = csrf(); });
 
     document.addEventListener('alpine:init', () => {
+        // Autocomplete for foreign keys and many-to-many: options come from the /_lookup endpoint.
+        Alpine.data('ffCombo', o => ({
+            name: o.name, url: o.url, multiple: o.multiple, selected: o.selected || [], disabled: o.disabled, required: o.required,
+            open: false, q: '', items: [], hi: 0, loaded: false,
+
+            toggle() {
+                if (this.disabled) return;
+                this.open = !this.open;
+                if (!this.open) return;
+                this.q = '';
+                this.fetch();
+                this.$nextTick(() => this.$refs.q.focus());
+            },
+            async fetch() {
+                const q = this.q;
+                const res = await fetch(`${this.url}?q=${encodeURIComponent(q)}`, { headers: { Accept: 'application/json' } });
+                if (!res.ok || q !== this.q) return;   // a newer query is on its way
+                this.items = (await res.json()).results;
+                this.hi = 0;
+                this.loaded = true;
+            },
+            isSelected(it) { return this.selected.some(s => s.value === it.value); },
+            pick(it) {
+                if (!it) return;
+                if (this.multiple) {
+                    this.selected = this.isSelected(it) ? this.selected.filter(s => s.value !== it.value) : [...this.selected, it];
+                    return;
+                }
+                this.selected = [it];
+                this.open = false;
+                this.$refs.button.focus();
+            },
+            remove(it) { this.selected = this.selected.filter(s => s.value !== it.value); },
+            clear() { this.selected = []; this.open = false; },
+            // Esc closes an open menu and goes no further; on a closed one it keeps its global meaning (back to list).
+            escape(e) {
+                if (!this.open) return;
+                e.stopPropagation();
+                this.open = false;
+                this.$refs.button.focus();
+            },
+            key(e) {
+                const n = this.items.length;
+                if (e.key === 'ArrowDown') { e.preventDefault(); if (n) this.hi = (this.hi + 1) % n; }
+                else if (e.key === 'ArrowUp') { e.preventDefault(); if (n) this.hi = (this.hi - 1 + n) % n; }
+                else if (e.key === 'Enter') { e.preventDefault(); this.pick(this.items[this.hi]); }   // never submit the form from here
+                else if (e.key === 'Backspace' && !this.q && this.multiple && this.selected.length) this.selected = this.selected.slice(0, -1);
+            },
+        }));
+
         Alpine.data('ff', () => ({
             theme: localStorage.getItem('ff-theme') || 'system',
             palette: false,

@@ -90,3 +90,29 @@ def test_bulk_delete(submit, db, rows):
 def test_next(submit, rows, next_url, target):
     r = submit("/admin/post/action", {"action": "publish", "ids": "1", "next": next_url})
     assert r.headers["location"].startswith(target)
+
+
+######################################################################
+# Actions on the edit page
+######################################################################
+def test_record_actions_on_form(admin_client, rows):
+    page = admin_client.get("/admin/post/1").text
+    assert 'id="actions-form"' in page and 'name="ids" value="1"' in page and 'name="next" value="/admin/post/1"' in page
+    assert 'form="actions-form" name="action" value="publish" data-action-key="u"' in page
+    assert """onclick='return confirm("Archive the selected posts?")'""" in page
+
+
+def test_record_action_returns_to_the_form(submit, db, rows):
+    r = submit("/admin/post/action", {"action": "publish", "ids": "1", "next": "/admin/post/1"})
+    assert r.headers["location"] == "/admin/post/1?msg=Publish%3A+1+posts"
+    assert db.get(Post, 1).status == Status.published
+
+
+def test_record_actions_follow_permissions(editor_client, db):
+    db.add(post())
+    page = editor_client.get("/admin/post/1").text
+    assert 'value="publish"' in page and 'value="archive"' not in page
+
+
+def test_new_form_has_no_record_actions(admin_client):
+    assert 'id="actions-form"' not in admin_client.get("/admin/post/new").text

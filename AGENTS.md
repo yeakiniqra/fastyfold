@@ -41,14 +41,14 @@ That is the whole public API: `Admin`, `ModelAdmin` and `action`.
 ## 2. Request flow
 
 1. `Admin.mount(app, path)` adds an `APIRouter` and mounts `StaticFiles` at `{path}/static`.
-2. Every route except `/login` and static files depends on `Admin.current_user`. It reads the signed `ff_session` cookie (itsdangerous, `max_age` 14 days). If there is no valid session:
+2. Every route except `/login` and static files depends on `Admin._user`. It reads the signed `ff_session` cookie (itsdangerous, `max_age` 14 days). If there is no valid session:
    - Normal requests get a 303 redirect to `/login?next=…`.
    - htmx requests get `HX-Redirect`.
-3. Every POST also runs `Admin.check_csrf`:
+3. Every POST also runs `Admin._csrf`:
    - The form field `_csrf`, or the `X-CSRF-Token` header for htmx and fetch, must equal `csrf_token(session)`.
    - That token is an HMAC of the session cookie with `secret_key`.
    - `base.html` puts it in a `<meta>` tag, and `fastyfold.js` adds it to every htmx request.
-4. Permission check: `Admin.can(user, perm, model_admin)` calls `ModelAdmin.has_permission(user, perm)`. `perm` is one of `view`, `add`, `change`, `delete`, or an action name. The default allows any signed-in user. Override it per model, or pass `Admin(permission=...)` to set it globally.
+4. Permission check: `Admin.can(user, perm, model_admin)` calls `ModelAdmin.has_permission(user, perm)`. `perm` is one of `view`, `add`, `change`, `delete`, `export`, or an action name. Custom pages (`Page`) go through the same check with `view`. The default allows any signed-in user. Override it per model, or pass `Admin(permission=...)` to set it globally.
 5. The view opens a session with `async with admin.session() as s` (an `async_sessionmaker` built from the user's engine), runs the query and renders a template.
 6. Writes go through `audit.record()` in the same transaction, then commit.
 
@@ -58,19 +58,23 @@ All routes sit under the mount path.
 
 | Method | Path | View | Template |
 |---|---|---|---|
-| GET/POST | `/login`, POST `/logout` | sign in and out | `login.html` |
-| GET | `/` | dashboard: record count per model and the latest audit entries | `dashboard.html` |
+| GET/POST | `/login`, POST `/logout` | sign in (rate limited per IP) and out | `login.html` |
+| GET | `/` | dashboard: record count per model, widgets and the latest audit entries | `dashboard.html` |
 | GET | `/{model}` | list, with `?view=table\|board\|split&q=&page=&sort=&f_<field>=` | `list.html` |
+| GET/POST | `/{page}` | a custom page from `@admin.page` (POST needs CSRF) | `page.html` or the page's Response |
+| GET | `/{model}/export.csv` | CSV of the current search, filters and sort; perm `export` | none |
+| GET | `/{model}/_lookup/{field}?q=` | JSON for an autocomplete: `field` is an fk, an m2m, or `<inline>.<fk>` | none |
 | GET | `/{model}/{pk}/preview` | split-view preview panel (htmx partial) | `partials/preview.html` |
 | GET/POST | `/{model}/new` | create form | `form.html` |
 | GET/POST | `/{model}/{pk}` | edit form | `form.html` |
 | POST | `/{model}/{pk}/delete` | delete one record | redirect |
 | POST | `/{model}/{pk}/move` | board drag and drop, sets `board_field` | 204 |
-| POST | `/{model}/action` | bulk action on `ids`, either `delete` or an `@action` | redirect |
+| POST | `/{model}/action` | bulk action on `ids`: `delete`, `export` (returns CSV) or an `@action` | redirect |
 | GET | `/_search?q=` | JSON for the ⌘K palette | none |
-| GET | `/_log` | audit log list | `log.html` |
+| GET | `/_log` | audit log list, with `?who=&model=&action=&days=` | `log.html` |
+| GET | `/_media/{key}` | uploaded files for `LocalStorage`; images inline, everything else as a sandboxed download | none |
 
-`{model}` is `ModelAdmin.slug`, which defaults to the lower-cased model class name.
+`{model}` is `ModelAdmin.slug`, which defaults to the lower-cased model class name. Models and pages share one slug namespace; `register()` and `page()` refuse a taken or reserved slug.
 
 ## 4. ModelAdmin and fields
 
@@ -92,8 +96,11 @@ All routes sit under the mount path.
 | Boolean | `bool` | toggle |
 | Date | `date` | date |
 | DateTime | `datetime` | datetime-local |
+| JSON | `json` | monospace textarea |
 | Enum, or `ModelAdmin.choices[name]` | `choice` | radio pills (≤5 options) or select |
-| ForeignKey column | `fk` | select of related rows, labelled with `str(obj)` |
+| ForeignKey column | `fk` | autocomplete (`ui.combobox`) fed by `/_lookup`, labelled with `admin.label(obj)` |
+| many-to-many relationship (`secondary=`) | `m2m` | multi-select autocomplete with chips |
+| String listed in `ModelAdmin.file_fields` | `image` / `file` | file input with preview and a Remove box |
 
 How a column's flags are set:
 
@@ -111,8 +118,11 @@ Each option has a default when it's left out:
 | `fieldsets` | one "Details" section; `[("Shipping", ["address", "city"]), …]` splits the form into cards |
 | `search_fields` | every `str` column |
 | `list_filter` | every `choice`, `bool` or `date` column |
+| `export_fields` | `list_display` |
+| `inlines` | none. `["items"]` edits every editable child column; `[("items", ["product_id", "qty"])]` picks them |
+| `file_fields` | none. `{"photo": "image", "manual": "file"}` (a list means all `file`) |
 
-Dotted names such as `customer.name` follow a many-to-one relationship. Search joins it, and display reads it. `list_display` may also name the relationship itself (`customer`), which displays `str(related)`.
+Dotted names such as `customer.name` follow a many-to-one relationship. Search joins it, and display reads it. `list_display` may also name the relationship itself (`customer`), which displays its label, or a method defined on the ModelAdmin subclass (`def margin(self, obj)`), which is shown but not sortable (`ModelAdmin.is_method`). Related rows are labelled with `Admin.label(obj)`: their own ModelAdmin's `label()` when registered, else `str(obj)`.
 
 Row identity, used by the table, board, split view, dashboard and palette:
 
@@ -126,12 +136,18 @@ Validation:
 2. If `ModelAdmin.schema` (Pydantic) is set, `schema.model_validate(data)` runs next. Its errors are mapped to field names.
 3. If there are errors, the form is re-rendered with status 422 and the values the user typed.
 
+Relations and files in `_save`:
+- **m2m:** the posted ids (`form.getlist(name)`) must all exist, else "Select a valid option."; the relationship is replaced as a whole.
+- **Inlines:** rows post as `<inline>-<i>-<field>`, plus `<inline>-<i>-id` for existing children and `<inline>-<i>-_delete`. Indices may have gaps (rows added in the browser). Blank new rows are dropped, ids that aren't this record's children are ignored, and the audit entry gets `{"items": [None, "1 added, 2 changed"]}`. Deleting the parent relies on the relationship's own cascade.
+- **Files:** `storage.check_upload` enforces `max_upload` and, for images, the real file signature. New files are saved as `<slug>/<random>.<ext>`; the replaced or removed file is deleted after commit, and so are a deleted record's files.
+
 ## 5. List views
 
 `ModelAdmin.list_query(params)` builds one `select()`:
 
 - **Search:** `q` becomes an OR of case-insensitive `icontains` (with `%`/`_` escaped) over `search_fields`, with outer joins for dotted fields.
-- **Filters:** `f_<field>=value`. Choice and bool filters match exactly. Date filters take `today`, `7d` or `30d`.
+- **Filters:** `f_<field>=value`. Choice, bool and fk filters match exactly. Date filters take `today`, `7d` or `30d`. Number filters take `lo..hi`, `lo..`, `..hi` or one value; the filter panel's two inputs are joined into that by Alpine. Unparsable values are ignored, and only working filters get a chip (`ModelAdmin.filter_text`).
+- **Export:** `export.csv` reuses the same query without paging. `ModelAdmin.export_value` writes ISO dates and raw numbers, and prefixes text starting with `= + - @` with `'` so spreadsheets never run it.
 - **Sort:** `sort=field` or `sort=-field`. The default is `-pk`.
 - **Paging:** `page` with `per_page`, defaulting to 25. `# ponytail:` this uses offset paging; switch to keyset paging for very large tables.
 
@@ -149,6 +165,8 @@ The context panel lists saved views: one per `board_field` choice with its count
 
 The table is created lazily on first use with `run_sync(metadata.create_all)`, guarded by a flag on the `Admin`. `record()` is called for every add, change, delete, move and action.
 
+Everything that reads the log (dashboard, `/_log`) passes `models=` the slugs the user may view, so changes to hidden models never show. `/_log` filters by user, model, action and date, and shows each change as old → new.
+
 ## 7. ⌘K palette and shortcuts
 
 `fastyfold.js` defines an Alpine store, `ff`:
@@ -159,12 +177,14 @@ The table is created lazily on first use with `run_sync(metadata.create_all)`, g
   ```
   - Records come from up to 3 matches per model, using `search_fields`.
   - Models are matched by name.
-  - Actions are "New {model}" for every model the user may add to, plus "Toggle dark mode" and "Keyboard shortcuts".
+  - Models are matched by name; custom pages are listed with them.
+  - Actions are "New {model}" for every model the user may add to, "Export {models}" once you type, plus "Toggle dark mode" and "Keyboard shortcuts".
 
   `↑`/`↓` and `↵` navigate the results with `htmx.ajax` / `location`.
 - **Global keys:** `?` shortcuts sheet, `G` then a model's `key` to jump to it (`D` for the dashboard), `T` dark mode, `N` new record, `Esc` close.
 - **List keys:** `J`/`K` move, `X` select, `↵`/`E` open, `F` filters, `1`/`2`/`3` for Table, Board and Split.
-- **Action keys:** `@action(key="s")` runs that action on the selected rows (bulk bar) or the previewed record (split view). Built-in keys win on a clash.
+- **Action keys:** `@action(key="s")` runs that action on the selected rows (bulk bar), the previewed record (split view) or the open record (its form's Actions card). Built-in keys win on a clash.
+- **Autocomplete (`ffCombo`):** `↑`/`↓` and `↵` pick, `Backspace` removes the last chip, `Esc` closes the menu without leaving the page. Keys that land on its button while the menu is open still drive the menu.
 - **Form keys:** `⌘S` save, `⌘↵` save and keep editing.
 
 Keys are ignored while focus is in an input, except `⌘K`, `⌘S` and `Esc`.
@@ -185,7 +205,8 @@ Keys are ignored while focus is in an input, except `⌘K`, `⌘S` and `Esc`.
 | Change | Where |
 |---|---|
 | New column type | `fields.py` `KIND_BY_TYPE` + parse/display + widget macro + test |
-| New page | route in `admin.py`, template extending `layout.html`, rail/palette entry, test |
+| New built-in page | route in `admin.py`, template extending `layout.html`, rail/palette entry, test |
+| A screen for one app | `@admin.page(...)` in that app, no fastyfold change needed |
 | New ModelAdmin option | class attribute with default in `model.py`, document in README + section 4 here |
 | Visual tweak | `styles/fastyfold.css` or template, then rebuild the CSS (section 8) |
 | Permission rule | `ModelAdmin.has_permission` or `Admin(permission=...)` |

@@ -41,10 +41,28 @@ def record(session: AsyncSession, *, user: str, action: str, model: str, obj_id,
     ))
 
 
-async def recent(session: AsyncSession, *, model: str | None = None, object_id=None, limit: int = 10, offset: int = 0) -> list[LogEntry]:
+async def recent(session: AsyncSession, *, model: str | None = None, models: list[str] | None = None, object_id=None,
+                 user: str | None = None, action: str | None = None, since: datetime | None = None,
+                 limit: int = 10, offset: int = 0) -> list[LogEntry]:
+    """Newest first. `models` limits entries to models the viewer may see."""
     q = select(LogEntry).order_by(LogEntry.id.desc()).limit(limit).offset(offset)
     if model:
         q = q.where(LogEntry.model == model)
+    if models is not None:
+        q = q.where(LogEntry.model.in_(models))
     if object_id is not None:
         q = q.where(LogEntry.object_id == str(object_id))
+    if user:
+        q = q.where(LogEntry.user == user)
+    if action:
+        q = q.where(LogEntry.action == action)
+    if since is not None:
+        q = q.where(LogEntry.at >= since)
+    return list((await session.scalars(q)).all())
+
+
+async def distinct(session: AsyncSession, column: str, *, models: list[str]) -> list[str]:
+    """Distinct `user` or `action` values, for the log's filter menus."""
+    col = getattr(LogEntry, column)
+    q = select(col).where(LogEntry.model.in_(models)).distinct().order_by(col).limit(100)
     return list((await session.scalars(q)).all())

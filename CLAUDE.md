@@ -28,6 +28,7 @@ The built `fastyfold.css` is committed. `tailwindcss` is the standalone binary f
 | `src/fastyfold/fields.py` | SQLAlchemy column → `Field` (widget, parse, display) |
 | `src/fastyfold/audit.py` | `LogEntry` table and `record()` |
 | `src/fastyfold/security.py` | Signed session cookie, CSRF token, password hashing helpers |
+| `src/fastyfold/storage.py` | Upload checks and `LocalStorage`; the storage protocol for `Admin(storage=...)` |
 | `src/fastyfold/templates/fastyfold/` | Jinja2 templates (layout, pages, partials, macros) |
 | `src/fastyfold/static/` | Built CSS, `fastyfold.js`, vendored htmx + Alpine |
 | `styles/fastyfold.css` | Tailwind v4 source (theme tokens, `@utility` components) |

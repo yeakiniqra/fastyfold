@@ -20,7 +20,7 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 
 from fastyfold.security import SESSION_COOKIE  # noqa: E402
 
-from .factories import author, post  # noqa: E402
+from .factories import PNG, author, comment, post, tag  # noqa: E402
 from .fixtures import DB  # noqa: E402
 from .server.app import create_app  # noqa: E402
 from .server.models import Author, Post, Status  # noqa: E402
@@ -510,3 +510,160 @@ def test_validation_errors_are_shown(page, go, live):
     page.keyboard.press("Control+s")
     expect(page.get_by_text("This field is required.")).to_be_visible()
     expect(page.get_by_text("1 field needs attention")).to_be_visible()
+
+
+######################################################################
+# Autocomplete (fk and m2m)
+######################################################################
+def test_fk_autocomplete(page, go, live):
+    live.db.add(author(name="Nusrat Jahan"), author(name="Arif Hossain"))
+    go("/admin/post/new")
+    page.click("#f-author_id")
+    search = page.get_by_placeholder("Search…").first
+    expect(search).to_be_focused()
+    expect(page.get_by_role("option")).to_have_count(2)
+    search.type("arif")
+    expect(page.get_by_role("option")).to_have_count(1)
+    page.keyboard.press("Enter")
+    expect(page.locator("#f-author_id")).to_have_text("Arif Hossain")
+    expect(page.locator('input[type=hidden][name="author_id"]')).to_have_value("2")
+    page.fill("#f-title", "Picked")
+    page.keyboard.press("Control+s")
+    expect(page).to_have_url(re.compile(r"/admin/post\?msg="))
+    assert live.db.get(Post, 1).author_id == 2
+
+
+def test_autocomplete_escape_and_arrows(page, go, live):
+    live.db.add(author(name="Alpha"), author(name="Beta"))
+    go("/admin/post/new")
+    page.click("#f-author_id")
+    expect(page.get_by_role("option")).to_have_count(2)
+    expect(page.get_by_placeholder("Search…").first).to_be_focused()
+    page.keyboard.press("ArrowDown")
+    page.keyboard.press("Enter")
+    expect(page.locator("#f-author_id")).to_have_text("Alpha")
+    page.click("#f-author_id")
+    page.keyboard.press("Escape")   # pressed before focus reaches the search box, too
+    expect(page.get_by_placeholder("Search…").first).to_be_hidden()
+    page.click("#f-author_id")
+    expect(page.get_by_placeholder("Search…").first).to_be_focused()
+    page.keyboard.press("Escape")
+    expect(page.locator("#f-author_id")).to_be_focused()
+    expect(page).to_have_url(live.url + "/admin/post/new")   # Escape closes the menu, it does not leave the form
+
+
+def test_autocomplete_keys_reach_menu_from_button(page, go, live):
+    """Keys that land on the button while the menu is open (fast typists) still drive the menu."""
+    live.db.add(author(name="Alpha"), author(name="Beta"))
+    go("/admin/post/new")
+    button = page.locator("#f-author_id")
+    button.click()
+    expect(page.get_by_role("option")).to_have_count(2)
+    button.press("ArrowDown")
+    button.press("Enter")
+    expect(button).to_have_text("Alpha")
+    expect(page).to_have_url(live.url + "/admin/post/new")
+
+
+def test_m2m_chips(page, go, live):
+    live.db.add(tag(), tag(), tag())
+    p = live.db.add(post(title="Tagged"))
+    go(f"/admin/post/{p.id}")
+    chips = page.locator("[data-chip]")
+    page.get_by_role("button", name="Tags").click()   # labelled by its <label>
+    page.get_by_role("option", name="Tag #1").click()
+    page.get_by_role("option", name="Tag #3").click()
+    expect(chips).to_have_count(2)
+    page.get_by_placeholder("Search…").first.press("Backspace")
+    expect(chips).to_have_count(1)
+    page.get_by_role("option", name="Tag #2").click()
+    page.get_by_role("button", name="Remove Tag #1").click()
+    expect(chips).to_have_count(1)
+    expect(chips.first).to_contain_text("Tag #2")
+    page.keyboard.press("Control+s")
+    expect(page).to_have_url(re.compile(r"\?msg="))
+    assert [t.id for t in live.db.get(Post, p.id, "tags").tags] == [2]
+
+
+######################################################################
+# Inlines
+######################################################################
+def test_inline_rows(page, go, live):
+    a = live.db.add(author(name="Commenter"))
+    p = live.db.add(post(title="Parent", comments=[comment(body="Keep"), comment(body="Drop")]))
+    go(f"/admin/post/{p.id}")
+    section = page.locator("#inline-comments")
+    rows = section.locator("[data-inline-row]")
+    expect(rows).to_have_count(2)
+    section.get_by_role("button", name="Add row").click()
+    section.get_by_role("button", name="Add row").click()
+    expect(rows).to_have_count(4)
+    rows.nth(3).get_by_role("button", name="Remove row").click()
+    expect(rows).to_have_count(3)
+    new = rows.nth(2)
+    new.get_by_label("Body").fill("Fresh")
+    new.get_by_label("Likes").fill("4")
+    new.get_by_role("button", name="Select…").click()
+    page.get_by_role("option", name="Commenter").click()
+    rows.nth(1).get_by_title("Remove row").click()
+    expect(rows.nth(1)).to_have_class(re.compile("opacity-40"))
+    page.keyboard.press("Control+s")
+    expect(page).to_have_url(re.compile(r"\?msg="))
+    saved = sorted((c.body, c.likes, c.author_id) for c in live.db.get(Post, p.id, "comments").comments)
+    assert saved == [("Fresh", 4, a.id), ("Keep", 0, None)]
+
+
+######################################################################
+# Filters, actions, pages, uploads, export
+######################################################################
+def test_fk_and_range_filters(page, go, live):
+    nusrat = live.db.add(author(name="Nusrat"))
+    live.db.add(post(title="Hers", author=nusrat, views=5), post(title="Other", views=5), post(title="Too many", author=nusrat, views=50))
+    go("/admin/post?view=table")
+    page.keyboard.press("f")
+    panel = page.locator("form", has=page.get_by_role("heading", name="Filters"))
+    panel.locator("fieldset", has_text="Author").get_by_role("button", name="Select…").click()
+    page.get_by_role("option", name="Nusrat").click()
+    panel.get_by_label("Views from").fill("1")
+    panel.get_by_label("Views to").fill("10")
+    panel.get_by_role("button", name="Apply filters").click()
+    expect(page).to_have_url(re.compile(rf"f_author_id={nusrat.id}.*f_views=1\.\.10"))
+    expect(page.get_by_text("Hers", exact=True)).to_have_count(1)
+    expect(page.get_by_text("Other", exact=True)).to_have_count(0)
+    expect(page.get_by_text("Views: 1 – 10")).to_be_visible()
+
+
+def test_record_action_key_on_form(page, go, live):
+    p = live.db.add(post())
+    go(f"/admin/post/{p.id}")
+    page.keyboard.press("u")
+    expect(page).to_have_url(re.compile(rf"/admin/post/{p.id}\?msg=Publish"))
+    assert live.db.get(Post, p.id).status == Status.published
+
+
+def test_custom_page_form(page, go):
+    go("/admin/reports")
+    expect(page.locator("#hello")).to_have_text("Hello admin")
+    page.fill("input[name=note]", "from the browser")
+    page.click("text=Send")
+    expect(page.locator("#echo")).to_have_text("Got from the browser")
+
+
+def test_image_upload(page, go, live, tmp_path):
+    a = live.db.add(author(name="Pictured"))
+    (tmp_path / "me.png").write_bytes(PNG)
+    go(f"/admin/author/{a.id}")
+    page.set_input_files("#f-photo", str(tmp_path / "me.png"))
+    page.keyboard.press("Control+Enter")
+    expect(page.get_by_alt_text("Current photo")).to_be_visible()
+    src = page.get_by_alt_text("Current photo").get_attribute("src")
+    assert page.request.get(live.url + src).body() == PNG
+
+
+def test_export_download(page, go, live):
+    live.db.add(post(title="Exported"))
+    go("/admin/post?view=table")
+    with page.expect_download() as dl:
+        page.get_by_role("link", name="Export").click()
+    assert dl.value.suggested_filename == "post.csv"
+    assert "Exported" in open(dl.value.path(), encoding="utf-8").read()

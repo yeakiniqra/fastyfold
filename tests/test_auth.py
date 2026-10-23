@@ -103,3 +103,46 @@ def test_sign_out_needs_csrf(admin_client):
 
 def test_user_shown_in_rail(admin_client):
     assert 'title="Sign out admin"' in admin_client.get("/admin/").text
+
+
+######################################################################
+# Rate limiting
+######################################################################
+def fail(client, n):
+    for _ in range(n):
+        assert client.post("/admin/login", data={"username": "admin", "password": "nope"}).status_code == HTTPStatus.UNAUTHORIZED
+
+
+def test_too_many_failures_block_sign_in(client):
+    fail(client, 10)
+    r = client.post("/admin/login", data={"username": "admin", "password": "admin"})
+    assert r.status_code == HTTPStatus.TOO_MANY_REQUESTS
+    assert "Too many failed sign-ins" in r.text and SESSION_COOKIE not in r.cookies
+
+
+def test_success_resets_the_count(client):
+    fail(client, 9)
+    login(client)
+    fail(client, 9)
+    assert login(client).status_code == HTTPStatus.SEE_OTHER
+
+
+def test_block_expires(client, monkeypatch):
+    import fastyfold.admin
+
+    fail(client, 10)
+    later = fastyfold.admin.time.monotonic() + 15 * 60 + 1
+    monkeypatch.setattr(fastyfold.admin.time, "monotonic", lambda: later)
+    assert login(client).status_code == HTTPStatus.SEE_OTHER
+
+
+@pytest.mark.parametrize("admin_options", [{"login_attempts": 2}])
+def test_limit_is_configurable(client):
+    fail(client, 2)
+    assert client.post("/admin/login", data={"username": "admin", "password": "admin"}).status_code == HTTPStatus.TOO_MANY_REQUESTS
+
+
+@pytest.mark.parametrize("admin_options", [{"login_attempts": 0}])
+def test_limit_can_be_turned_off(client):
+    fail(client, 30)
+    assert login(client).status_code == HTTPStatus.SEE_OTHER

@@ -12,7 +12,13 @@
                 {% set act = admin.models[e.model].actions.get(e.action) if e.model in admin.models else none %}
                 <span class="text-muted">{{ {'add': 'added', 'change': 'changed', 'delete': 'deleted'}.get(e.action) or ('ran “' ~ (act.label if act else e.action) ~ '” on') }}</span>
                 {% if e.action != 'delete' and e.model in admin.models %}<a class="font-semibold hover:text-accent-ink" href="{{ admin.url(e.model, e.object_id) }}">{{ e.object_repr }}</a>{% else %}<span class="font-semibold">{{ e.object_repr }}</span>{% endif %}
-                {% if e.changed %}<span class="block truncate text-xs text-muted">{% for f, v in e.changed.items() %}{{ f }}: {{ v[1] }}{{ ', ' if not loop.last }}{% endfor %}</span>{% endif %}
+                {% if e.changed and detailed %}
+                    <span class="mt-1.5 block space-y-1 text-xs" data-diff>{% for f, v in e.changed.items() %}
+                        <span class="block"><span class="font-semibold text-muted">{{ f }}</span>
+                            {% if v[0] is not none %}<del class="text-faint">{{ v[0] }}</del> <span class="text-faint">→</span>{% endif %}
+                            <ins class="font-semibold no-underline">{{ v[1] if v[1] is not none else '—' }}</ins></span>
+                    {% endfor %}</span>
+                {% elif e.changed %}<span class="block truncate text-xs text-muted">{% for f, v in e.changed.items() %}{{ f }}: {{ v[1] }}{{ ', ' if not loop.last }}{% endfor %}</span>{% endif %}
                 <span class="block text-xs text-faint">{{ e.at.strftime('%b %d, %H:%M') }}</span>
             </p>
         </li>

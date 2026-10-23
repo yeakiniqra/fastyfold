@@ -1,5 +1,7 @@
 from http import HTTPStatus
 
+import pytest
+
 from fastyfold.audit import LogEntry
 
 from .factories import author, post
@@ -97,3 +99,70 @@ def test_history_is_per_record(admin_client, submit, db):
     a, b = db.add(post(title="A"), post(title="B"))
     submit(f"/admin/post/{a.id}/move", {"value": "review"})
     assert "status: review" not in admin_client.get(f"/admin/post/{b.id}").text
+
+
+######################################################################
+# Who may see what, filters and the diff
+######################################################################
+def test_log_hides_models_the_user_cannot_view(client, db):
+    from .factories import secret
+    from .fixtures import login
+
+    login(client, "admin")
+    s = db.add(secret(value="classified"))
+    token = client.app.state.admin.signer.csrf(client.cookies.get("ff_session"))
+    client.post(f"/admin/secret/{s.id}", data={"_csrf": token, "value": "changed"})
+    assert "changed" in client.get("/admin/_log").text
+    login(client, "editor")
+    assert "classified" not in client.get("/admin/_log").text and "changed" not in client.get("/admin/_log").text
+    assert "changed" not in client.get("/admin/").text.split("Team activity")[1]
+
+
+@pytest.fixture
+def history(admin_client, submit, db):
+    a, b = db.add(post(title="Alpha"), post(title="Beta"))
+    submit(f"/admin/post/{a.id}/move", {"value": "review"})
+    submit("/admin/post/action", {"action": "publish", "ids": str(b.id)})
+    au = db.add(author(name="Writer"))
+    submit(f"/admin/author/{au.id}", {"name": "Writer 2"})
+    return a, b
+
+
+def entries(page):
+    return [m for m in ("Alpha", "Beta", "Writer 2") if f">{m}</a>" in page]
+
+
+@pytest.mark.parametrize("query, expected", [
+    ("", ["Alpha", "Beta", "Writer 2"]),
+    ("model=author", ["Writer 2"]),
+    ("model=post", ["Alpha", "Beta"]),
+    ("action=publish", ["Beta"]),
+    ("action=change&model=post", ["Alpha"]),
+    ("who=admin&days=today", ["Alpha", "Beta", "Writer 2"]),
+    ("who=nobody", []),
+    ("model=secret", []),
+    ("model=nope", ["Alpha", "Beta", "Writer 2"]),
+])
+def test_log_filters(admin_client, history, query, expected):
+    assert entries(admin_client.get(f"/admin/_log?{query}").text) == expected
+
+
+def test_log_filter_menus(admin_client, history):
+    page = admin_client.get("/admin/_log?model=post").text
+    assert '<option value="admin" >admin</option>' in page
+    assert '<option value="post" selected>Posts</option>' in page and '<option value="author" >Authors</option>' in page
+    assert '<option value="publish" >publish</option>' in page and "Clear filters" in page
+
+
+def test_log_shows_old_and_new(admin_client, history):
+    page = admin_client.get("/admin/_log").text
+    assert '<del class="text-faint">draft</del>' in page and '<ins class="font-semibold no-underline">review</ins>' in page
+    assert '<del class="text-faint">Writer</del>' in page
+
+
+def test_log_pager_keeps_filters(admin_client, submit, db):
+    rows = db.add(*[post() for _ in range(55)])
+    for p in rows:
+        submit(f"/admin/post/{p.id}/move", {"value": "review"})
+    page = admin_client.get("/admin/_log?model=post&action=change").text
+    assert 'href="/admin/_log?page=2&amp;model=post&amp;action=change"' in page

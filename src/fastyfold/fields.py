@@ -18,15 +18,15 @@ class FieldError(ValueError):
 class Field:
     name: str
     label: str
-    kind: str                       # int decimal str text bool date datetime choice fk json
+    kind: str                       # int decimal str text bool date datetime choice fk json m2m image file
     required: bool = False
     readonly: bool = False
     choices: list[tuple[str, str]] = field(default_factory=list)   # (value, label)
     enum_cls: type[enum.Enum] | None = None
     default: object = None          # scalar Python default, pre-filled on new forms
     auto: bool = False              # filled by the database (server_default); off forms unless listed
-    relation: str | None = None     # relationship attribute name for fk columns
-    target: type | None = None      # related model class for fk columns
+    relation: str | None = None     # relationship attribute name for fk and m2m fields
+    target: type | None = None      # related model class for fk and m2m fields
     help: str = ""
 
     def parse(self, raw: str | None):
@@ -89,6 +89,8 @@ class Field:
             return value.strftime("%b %d, %Y")
         if self.kind == "decimal":
             return f"{value:,.2f}"
+        if self.kind in ("image", "file"):
+            return str(value).rsplit("/", 1)[-1]
         return str(value)
 
 
@@ -119,8 +121,10 @@ def _kind(col) -> str:
     return "str"
 
 
-def fields_for(mapper: Mapper, choices: dict[str, list] | None = None, readonly: set[str] = frozenset()) -> dict[str, Field]:
-    choices = choices or {}
+def fields_for(mapper: Mapper, choices: dict[str, list] | None = None, readonly: set[str] = frozenset(),
+               files: dict[str, str] | None = None) -> dict[str, Field]:
+    """Columns first, then many-to-many relationships. `files` maps a string column to "image" or "file"."""
+    choices, files = choices or {}, files or {}
     fk_relations = {}
     for rel in mapper.relationships:
         if rel.direction.name == "MANYTOONE":
@@ -152,5 +156,11 @@ def fields_for(mapper: Mapper, choices: dict[str, list] | None = None, readonly:
             f.choices = [(str(c[0]), str(c[1])) if isinstance(c, (tuple, list)) else (str(c), humanize(str(c))) for c in choices[prop.key]]
         if kind == "fk" and prop.key in fk_relations:
             f.relation, f.target = fk_relations[prop.key]
+        if prop.key in files:
+            f.kind = files[prop.key]
         out[prop.key] = f
+    for rel in mapper.relationships:
+        if rel.direction.name == "MANYTOMANY":
+            out[rel.key] = Field(name=rel.key, label=humanize(rel.key), kind="m2m", relation=rel.key,
+                                 target=rel.mapper.class_, readonly=rel.key in readonly)
     return out

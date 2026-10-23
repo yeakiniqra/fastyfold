@@ -6,8 +6,8 @@
 {%- set v = values.get(f.name, '') -%}
 {%- set err = errors.get(f.name) -%}
 {%- set bad = '!border-rose-400 !bg-rose-50 dark:!bg-rose-500/10' if err else '' -%}
-{%- set off = not can_change and obj -%}
-<div class="{{ 'col-span-2' if f.kind in ('text', 'json', 'choice') }}">
+{%- set off = not can_change and obj is not none -%}
+<div class="{{ 'col-span-2' if f.kind in ('text', 'json', 'choice', 'm2m', 'image', 'file') }}">
     <label class="field-label" for="f-{{ f.name }}">{{ f.label }}{% if f.required %} <span class="text-accent">*</span>{% endif %}</label>
     {% if f.kind in ('text', 'json') %}
         <textarea id="f-{{ f.name }}" name="{{ f.name }}" rows="4" class="field h-auto py-3 {{ 'font-mono text-xs' if f.kind == 'json' }} {{ bad }}" {{ 'disabled' if off }}>{{ v }}</textarea>
@@ -27,13 +27,25 @@
                 </label>
             {% endfor %}
         </div>
-    {% elif f.kind in ('choice', 'fk') %}
+    {% elif f.kind == 'choice' %}
         <select id="f-{{ f.name }}" name="{{ f.name }}" class="field {{ bad }}" {{ 'disabled' if off }}>
             {% if not f.required or not v %}<option value="">—</option>{% endif %}
-            {% for value, label in (f.choices if f.kind == 'choice' else fk_options.get(f.name, [])) %}
-                <option value="{{ value }}" {{ 'selected' if v == value }}>{{ label }}</option>
-            {% endfor %}
+            {% for value, label in f.choices %}<option value="{{ value }}" {{ 'selected' if v == value }}>{{ label }}</option>{% endfor %}
         </select>
+    {% elif f.kind in ('fk', 'm2m') %}
+        {{ ui.combobox(f.name | tojson, selected.get(f.name, []), admin.url(ma.slug, '_lookup', f.name), multiple=f.kind == 'm2m',
+                       disabled=off, required=f.required, id='f-' ~ f.name) }}
+    {% elif f.kind in ('image', 'file') %}
+        <div class="flex flex-wrap items-center gap-4 rounded-2xl bg-soft p-3 {{ bad }}">
+            {% if v %}
+                {% if f.kind == 'image' %}<img src="{{ admin.file_url(v) }}" alt="Current {{ f.label | lower }}" class="size-16 rounded-xl object-cover">
+                {% else %}<a href="{{ admin.file_url(v) }}" class="flex items-center gap-2 font-semibold text-accent-ink hover:underline">{{ ui.icon('description', '!text-[18px]') }}{{ f.display(v) }}</a>{% endif %}
+            {% endif %}
+            <input type="file" id="f-{{ f.name }}" name="{{ f.name }}" {{ 'disabled' if off }}
+                   {% if f.kind == 'image' %}accept="image/png,image/jpeg,image/gif,image/webp"{% endif %}
+                   class="min-w-0 flex-1 text-sm text-muted file:mr-3 file:rounded-full file:border-0 file:bg-panel file:px-4 file:py-2 file:font-semibold file:text-fg">
+            {% if v and not f.required %}<label class="flex items-center gap-2 font-medium text-muted"><input type="checkbox" name="{{ f.name }}__clear" value="1" class="size-4 accent-[var(--ff-accent)]" {{ 'disabled' if off }}> Remove</label>{% endif %}
+        </div>
     {% else %}
         <input id="f-{{ f.name }}" name="{{ f.name }}" value="{{ v }}" class="field {{ bad }}" {{ 'disabled' if off }}
                type="{{ {'int': 'number', 'decimal': 'number', 'date': 'date', 'datetime': 'datetime-local'}.get(f.kind, 'text') }}"
@@ -44,6 +56,34 @@
 </div>
 {%- endmacro %}
 
+{# One cell of an inline row. Rows added in the browser (dynamic) build their names from the Alpine `i`. #}
+{% macro nameattr(inl, i, n, dynamic) -%}
+{%- if dynamic %}:name="`{{ inl.name }}-${i}-{{ n }}`"{% else %}name="{{ inl.name }}-{{ i }}-{{ n }}"{% endif -%}
+{%- endmacro %}
+
+{% macro inline_input(inl, n, i, v, dynamic=False) -%}
+{%- set f = inl.fields[n] -%}
+{%- set off = not can_change and obj is not none -%}
+{%- set err = errors.get(inl.name ~ '-' ~ i ~ '-' ~ n) if not dynamic else none -%}
+{%- if f.kind == 'bool' -%}
+    <input type="checkbox" {{ nameattr(inl, i, n, dynamic) }} class="mt-3 size-4 accent-[var(--ff-accent)]" aria-label="{{ f.label }}" {{ 'checked' if v in ('True', 'true', 'on', '1') }} {{ 'disabled' if off }}>
+{%- elif f.kind == 'choice' -%}
+    <select {{ nameattr(inl, i, n, dynamic) }} class="field h-10 min-w-28" aria-label="{{ f.label }}" {{ 'disabled' if off }}>
+        {% if not f.required or not v %}<option value="">—</option>{% endif %}
+        {% for value, label in f.choices %}<option value="{{ value }}" {{ 'selected' if v == value }}>{{ label }}</option>{% endfor %}
+    </select>
+{%- elif f.kind == 'fk' and f.target -%}
+    {{ ui.combobox(('`' ~ inl.name ~ '-${i}-' ~ n ~ '`') if dynamic else (inl.name ~ '-' ~ i ~ '-' ~ n) | tojson,
+                   [] if dynamic else selected.get(inl.name ~ '-' ~ i ~ '-' ~ n, []), admin.url(ma.slug, '_lookup', inl.name ~ '.' ~ n),
+                   disabled=off, required=f.required) }}
+{%- else -%}
+    <input {{ nameattr(inl, i, n, dynamic) }} value="{{ v }}" aria-label="{{ f.label }}" {{ 'disabled' if off }}
+           class="field h-10 min-w-24 {{ '!border-rose-400' if err }}" type="{{ {'int': 'number', 'decimal': 'number', 'date': 'date', 'datetime': 'datetime-local'}.get(f.kind, 'text') }}"
+           {% if f.kind == 'decimal' %}step="any"{% endif %}>
+{%- endif -%}
+{%- if err %}<p class="mt-1 text-xs font-semibold text-rose-600 dark:text-rose-400">{{ err }}</p>{% endif -%}
+{%- endmacro %}
+
 {% block context %}
     <div class="px-2 text-xs font-bold tracking-widest text-faint uppercase">{{ ma.group }}</div>
     <div class="mt-1 px-2 text-lg font-extrabold">{{ ma.name_plural }}</div>
@@ -52,13 +92,17 @@
         {% for title, names in ma.fieldsets %}
             <li><a href="#section-{{ loop.index }}" class="flex items-center gap-2.5 rounded-xl px-2 py-2 font-medium text-muted hover:bg-panel/60 hover:text-fg"><span class="size-1.5 rounded-full bg-faint"></span>{{ title }}</a></li>
         {% endfor %}
+        {% for inl in ma.inlines %}
+            <li><a href="#inline-{{ inl.name }}" class="flex items-center gap-2.5 rounded-xl px-2 py-2 font-medium text-muted hover:bg-panel/60 hover:text-fg"><span class="size-1.5 rounded-full bg-faint"></span>{{ inl.label }}</a></li>
+        {% endfor %}
     </ul>
 {% endblock %}
 
 {% block back %}<a href="{{ admin.url(ma.slug) }}" data-back class="flex size-11 items-center justify-center rounded-full bg-panel shadow-xs hover:bg-soft" aria-label="Back to list">{{ ui.icon('arrow_back') }}</a>{% endblock %}
 
 {% block content %}
-<form method="post" id="record-form" class="mt-6 pb-28" novalidate>
+{% set off = not can_change and obj is not none %}
+<form method="post" id="record-form" class="mt-6 pb-28" novalidate {% if multipart %}enctype="multipart/form-data"{% endif %}>
     {{ ui.csrf_input() }}
     <div class="flex items-center gap-4">
         {{ ui.avatar(ma.avatar_text(obj) if obj else ma.name, 'size-14', 'rounded-2xl') }}
@@ -86,6 +130,48 @@
                     </div>
                 </section>
             {% endfor %}
+
+            {% for inl in ma.inlines %}
+                {% set rows = inline_rows.get(inl.name, []) %}
+                <section class="float scroll-mt-6 p-7" id="inline-{{ inl.name }}" x-data="{ added: [], next: {{ (rows | map(attribute='i') | max + 1) if rows else 0 }} }">
+                    <div class="flex items-center gap-3">
+                        <span class="flex size-9 items-center justify-center rounded-2xl bg-accent-soft text-accent-ink">{{ ui.icon('table_rows', '!text-[18px]') }}</span>
+                        <h2 class="font-bold">{{ inl.label }}</h2>
+                        <span class="rounded-full bg-soft px-2 py-0.5 text-xs font-bold text-muted" x-text="{{ rows | length }} + added.length"></span>
+                    </div>
+                    <div class="mt-5 overflow-x-auto">
+                        <table class="w-full" data-inline="{{ inl.name }}">
+                            <thead>
+                                <tr class="text-left text-xs font-bold text-faint">
+                                    {% for n in inl.names %}<th class="pr-3 pb-2">{{ inl.fields[n].label }}{% if inl.fields[n].required %} <span class="text-accent">*</span>{% endif %}</th>{% endfor %}
+                                    <th class="w-10 pb-2"><span class="sr-only">Remove</span></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for row in rows %}
+                                    <tr class="align-top transition" x-data="{ gone: {{ 'true' if row.deleted else 'false' }} }" :class="gone && 'opacity-40'" data-inline-row>
+                                        {% for n in inl.names %}<td class="py-1.5 pr-3">{{ inline_input(inl, n, row.i, row['values'][n]) }}</td>{% endfor %}
+                                        <td class="py-1.5">
+                                            <input type="hidden" name="{{ inl.name }}-{{ row.i }}-id" value="{{ row.id }}">
+                                            {% if not off %}
+                                            <label class="flex size-10 cursor-pointer items-center justify-center rounded-full text-faint hover:bg-soft hover:text-rose-600" :class="gone && '!text-rose-600'" title="Remove row">
+                                                <input type="checkbox" name="{{ inl.name }}-{{ row.i }}-_delete" value="1" class="sr-only" x-model="gone" aria-label="Remove row">{{ ui.icon('delete', '!text-[18px]') }}</label>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                                <template x-for="i in added" :key="i">
+                                    <tr class="align-top" data-inline-row>
+                                        {% for n in inl.names %}<td class="py-1.5 pr-3">{{ inline_input(inl, n, none, '', dynamic=True) }}</td>{% endfor %}
+                                        <td class="py-1.5"><button type="button" class="flex size-10 items-center justify-center rounded-full text-faint hover:bg-soft hover:text-rose-600" @click="added = added.filter(x => x !== i)" aria-label="Remove row">{{ ui.icon('close', '!text-[18px]') }}</button></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                    {% if not off %}<button type="button" class="pill mt-4 h-9 bg-soft hover:bg-line" @click="added.push(next++)" data-add-row>{{ ui.icon('add', '!text-[18px]') }}Add row</button>{% endif %}
+                </section>
+            {% endfor %}
         </div>
 
         <div class="col-span-12 space-y-5 xl:col-span-4">
@@ -96,13 +182,27 @@
                     <div class="mt-4 grid grid-cols-2 gap-2">
                         {% for value, label in f.choices %}
                             <label class="cursor-pointer">
-                                <input type="radio" name="{{ f.name }}" value="{{ value }}" class="peer sr-only" {{ 'checked' if values.get(f.name) == value }} {{ 'disabled' if not can_change and obj }}>
+                                <input type="radio" name="{{ f.name }}" value="{{ value }}" class="peer sr-only" {{ 'checked' if values.get(f.name) == value }} {{ 'disabled' if not can_change and obj is not none }}>
                                 <span class="flex items-center gap-2 rounded-2xl border-2 border-line px-3 py-2.5 font-semibold text-muted peer-checked:border-accent peer-checked:bg-accent-soft peer-checked:text-accent-ink">
                                     <span class="size-2.5 rounded-full" style="background: {{ ma.color(f.name, value) }}"></span>{{ label }}</span>
                             </label>
                         {% endfor %}
                     </div>
                     {% if errors.get(f.name) %}<p class="mt-2 text-xs font-semibold text-rose-600">{{ errors[f.name] }}</p>{% endif %}
+                </section>
+            {% endif %}
+
+            {% if actions %}
+                <section class="float p-6">
+                    <h2 class="font-bold">Actions</h2>
+                    <div class="mt-4 space-y-2">
+                        {% for a in actions %}
+                            <button form="actions-form" name="action" value="{{ a.name }}" {% if a.key %}data-action-key="{{ a.key | lower }}"{% endif %}
+                                    {% if a.confirm %}onclick='return confirm({{ a.confirm | tojson }})'{% endif %}
+                                    class="flex w-full items-center gap-3 rounded-2xl border-2 border-line px-4 py-3 text-left font-semibold transition hover:border-accent hover:bg-accent-soft">
+                                {{ ui.icon(a.icon, '!text-[18px]') }}<span class="flex-1">{{ a.label }}</span>{% if a.key %}<span class="kbd">{{ a.key | upper }}</span>{% endif %}</button>
+                        {% endfor %}
+                    </div>
                 </section>
             {% endif %}
 
@@ -139,5 +239,11 @@
 </form>
 {% if can_delete %}
 <form id="delete-form" method="post" action="{{ admin.url(ma.slug, ma.pk_of(obj), 'delete') }}">{{ ui.csrf_input() }}</form>
+{% endif %}
+{% if actions %}
+<form id="actions-form" method="post" action="{{ admin.url(ma.slug, 'action') }}">
+    {{ ui.csrf_input() }}<input type="hidden" name="ids" value="{{ ma.pk_of(obj) }}">
+    <input type="hidden" name="next" value="{{ admin.url(ma.slug, ma.pk_of(obj)) }}">
+</form>
 {% endif %}
 {% endblock %}

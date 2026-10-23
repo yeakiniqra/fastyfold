@@ -1,10 +1,12 @@
 """ModelAdmin: per-model options and the queries behind list, board and search."""
 
 import enum
-from datetime import datetime, timedelta, timezone
+import json
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from sqlalchemy import Select, func, inspect, or_, select
+from sqlalchemy import Select, and_, func, inspect, or_, select
 from sqlalchemy.orm import selectinload
 
 from .fields import Field, fields_for, humanize
@@ -13,6 +15,8 @@ if TYPE_CHECKING:
     from .admin import Admin
 
 PALETTE = ["#f59e0b", "#10b981", "#3b82f6", "#a8a29e", "#ef4444", "#06b6d4", "#ec4899", "#84cc16"]
+DATE_RANGES = [("today", "Today"), ("7d", "Last 7 days"), ("30d", "Last 30 days")]
+DAYS = {"today": 0, "7d": 7, "30d": 30}
 
 
 def action(label: str, *, icon: str = "bolt", key: str | None = None, confirm: str | None = None) -> Callable:
@@ -21,6 +25,18 @@ def action(label: str, *, icon: str = "bolt", key: str | None = None, confirm: s
         fn._ff_action = {"label": label, "icon": icon, "key": key, "confirm": confirm}
         return fn
     return wrap
+
+
+@dataclass
+class Inline:
+    """Children edited inside the parent's form, from `ModelAdmin.inlines`."""
+    name: str                       # relationship on the parent
+    label: str
+    model: type
+    pk: str
+    fields: dict[str, Field]
+    names: list[str]                # editable columns, in order
+    relations: list[str]            # the child's many-to-one relationships, loaded for labels
 
 
 class ModelAdmin:
@@ -32,13 +48,16 @@ class ModelAdmin:
     icon: str = "table_rows"
     key: str | None = None             # `G` then this key jumps here
 
-    list_display: list[str] | None = None
+    list_display: list[str] | None = None   # columns, `relation.column`, relationship names or ModelAdmin methods
     search_fields: list[str] | None = None
     list_filter: list[str] | None = None
     form_fields: list[str] | None = None
     readonly_fields: list[str] = []
     preview_fields: list[str] | None = None
+    export_fields: list[str] | None = None
     fieldsets: list[tuple[str, list[str]]] | None = None   # [("Shipping", ["address", "city"]), ...]
+    inlines: list = []                 # ["items"] or [("items", ["product_id", "qty"])]: one-to-many children
+    file_fields: dict[str, str] | list[str] = {}   # {"photo": "image", "manual": "file"}
     board_field: str | None = None
     choices: dict[str, list] = {}
     colors: dict[str, str] = {}        # choice value -> hex colour
@@ -50,7 +69,8 @@ class ModelAdmin:
         self.admin = admin
         self.mapper = inspect(self.model)
         self.pk = self.mapper.primary_key[0].key
-        self.fields: dict[str, Field] = fields_for(self.mapper, self.choices, set(self.readonly_fields))
+        files = self.file_fields if isinstance(self.file_fields, dict) else dict.fromkeys(self.file_fields, "file")
+        self.fields: dict[str, Field] = fields_for(self.mapper, self.choices, set(self.readonly_fields), files)
         cls_name = self.model.__name__
         self.name = self.name or humanize(_snake(cls_name)).capitalize()
         self.name_plural = self.name_plural or _plural(self.name)
@@ -61,7 +81,9 @@ class ModelAdmin:
         self.list_filter = self.list_filter if self.list_filter is not None else [n for n, f in self.fields.items() if f.kind in ("choice", "bool", "date", "datetime")]
         self.form_fields = self.form_fields or [n for n, f in self.fields.items() if not f.readonly and not f.auto]
         self.preview_fields = self.preview_fields or self.list_display
+        self.export_fields = self.export_fields or self.list_display
         self.relations = [r.key for r in self.mapper.relationships if r.direction.name == "MANYTOONE"]
+        self.inlines = [self._inline(*(spec if isinstance(spec, (tuple, list)) else (spec, None))) for spec in type(self).inlines]
         if not self.fieldsets:
             main = [n for n in self.form_fields if n != self.board_field]
             self.fieldsets = [("Details", main)] if main else []
@@ -75,9 +97,19 @@ class ModelAdmin:
         # Records without a text title (e.g. orders) borrow a face from their first relation.
         self.lead_fk = next((n for n in self.list_display if n in self.relations or (n in self.fields and self.fields[n].kind == "fk")), None)
 
+    def _inline(self, name: str, names: list[str] | None) -> Inline:
+        rel = self.mapper.relationships[name]
+        child = rel.mapper
+        to_parent = {child.get_property_by_column(c).key for c in rel.remote_side}
+        fields = fields_for(child)
+        names = names or [n for n, f in fields.items() if not f.readonly and not f.auto and n not in to_parent and f.kind != "m2m"]
+        back = lambda r: {child.get_property_by_column(c).key for c in r.local_columns} & to_parent  # noqa: E731
+        return Inline(name=name, label=humanize(name), model=child.class_, pk=child.primary_key[0].key, fields=fields, names=names,
+                      relations=[r.key for r in child.relationships if r.direction.name == "MANYTOONE" and not back(r)])
+
     # ── permissions and hooks ─────────────────────────────────────────────
     def has_permission(self, user: str, perm: str) -> bool:
-        """perm: view, add, change, delete, or an action name. Override per model."""
+        """perm: view, add, change, delete, export, or an action name. Override per model."""
         return True
 
     async def save(self, session, obj, is_new: bool) -> None:
@@ -93,6 +125,14 @@ class ModelAdmin:
     def label(self, obj) -> str:
         text = str(obj)
         return f"{self.name} #{self.pk_of(obj)}" if text.startswith("<") else text
+
+    def label_of(self, obj) -> str:
+        """Label for a related object, using its own ModelAdmin when it has one."""
+        return self.admin.label(obj) if self.admin else str(obj)
+
+    def is_method(self, name: str) -> bool:
+        """`list_display` may name a method on this ModelAdmin subclass: `def margin(self, obj)`."""
+        return name not in self.fields and name not in vars(ModelAdmin) and callable(getattr(type(self), name, None))
 
     def value(self, obj, name: str):
         for part in name.split("."):
@@ -122,13 +162,40 @@ class ModelAdmin:
             return self.fields[name].label
         return humanize(name.replace(".", " "))
 
+    def sortable(self, name: str) -> bool:
+        return name in self.fields and self.fields[name].kind != "m2m"
+
     def display(self, obj, name: str) -> str:
+        if self.is_method(name):
+            val = getattr(self, name)(obj)
+            return "—" if val is None else str(val)
         f = self.fields.get(name)
-        val = self.value(obj, name)
         if f and f.kind == "fk" and f.relation:
             rel = getattr(obj, f.relation, None)
-            return str(rel) if rel is not None else "—"
-        return f.display(val) if f else ("—" if val is None else str(val))
+            return self.label_of(rel) if rel is not None else "—"
+        if f and f.kind == "m2m":
+            return ", ".join(self.label_of(o) for o in getattr(obj, name)) or "—"
+        val = self.value(obj, name)
+        if f:
+            return f.display(val)
+        if name in self.relations:
+            return self.label_of(val) if val is not None else "—"
+        return "—" if val is None else str(val)
+
+    def export_value(self, obj, name: str) -> str:
+        """Plain value for CSV: ISO dates, raw numbers, labels for relations."""
+        f = self.fields.get(name)
+        if f is None or f.kind in ("fk", "m2m", "choice"):
+            text = self.display(obj, name)
+            return _cell("" if text == "—" else text)
+        val = self.value(obj, name)
+        if val is None:
+            return ""
+        if isinstance(val, (date, datetime)):
+            return val.isoformat()
+        if f.kind in ("int", "decimal", "bool"):
+            return str(val)
+        return _cell(json.dumps(val) if f.kind == "json" else str(val.value if isinstance(val, enum.Enum) else val))
 
     def raw(self, obj, name: str) -> str:
         val = self.value(obj, name)
@@ -145,11 +212,24 @@ class ModelAdmin:
         f = self.fields.get(name)
         return bool(f and f.kind == "choice")
 
+    def lookup_field(self, path: str) -> Field | None:
+        """The fk or m2m field behind an autocomplete: `author_id`, `tags` or `<inline>.<field>`."""
+        name, _, sub = path.partition(".")
+        if sub:
+            inl = next((i for i in self.inlines if i.name == name), None)
+            f = inl.fields.get(sub) if inl and sub in inl.names else None
+        else:
+            f = self.fields.get(name)
+        return f if f and f.kind in ("fk", "m2m") and f.target else None
+
     # ── queries ───────────────────────────────────────────────────────────
     def base_query(self) -> Select:
         q = select(self.model)
-        for rel in self.relations:
-            q = q.options(selectinload(getattr(self.model, rel)))
+        for name in self.relations + [n for n, f in self.fields.items() if f.kind == "m2m"]:
+            q = q.options(selectinload(getattr(self.model, name)))
+        for inl in self.inlines:
+            children = selectinload(getattr(self.model, inl.name))
+            q = q.options(children, *[children.selectinload(getattr(inl.model, r)) for r in inl.relations])
         return q
 
     def _column(self, name: str, joined: set):
@@ -174,7 +254,7 @@ class ModelAdmin:
             stmt = stmt.outerjoin(getattr(self.model, rel))
         sort = sort or self.ordering or f"-{self.pk}"
         name = sort.lstrip("-")
-        if name in self.fields:
+        if self.sortable(name):
             col = getattr(self.model, name)
             stmt = stmt.order_by(col.desc() if sort.startswith("-") else col.asc())
         return stmt
@@ -186,13 +266,25 @@ class ModelAdmin:
         col = getattr(self.model, name)
         if f.kind == "bool":
             return col.is_(raw == "1")
-        if f.kind == "choice":
+        if f.kind in ("choice", "fk"):
             try:
                 return col == f.parse(raw)
             except ValueError:
                 return None
+        if f.kind in ("int", "decimal"):
+            lo, sep, hi = raw.partition("..")
+            lo, hi = (lo, hi) if sep else (raw, raw)
+            conds = []
+            try:
+                if lo.strip():
+                    conds.append(col >= f.parse(lo))
+                if hi.strip():
+                    conds.append(col <= f.parse(hi))
+            except ValueError:
+                return None
+            return and_(*conds) if conds else None
         if f.kind in ("date", "datetime"):
-            days = {"today": 0, "7d": 7, "30d": 30}.get(raw)
+            days = DAYS.get(raw)
             if days is None:
                 return None
             aware = getattr(col.type, "timezone", False)
@@ -208,15 +300,32 @@ class ModelAdmin:
             if not f:
                 continue
             if f.kind == "choice":
-                opts = f.choices
+                kind, opts = "choice", f.choices
             elif f.kind == "bool":
-                opts = [("1", "Yes"), ("0", "No")]
+                kind, opts = "bool", [("1", "Yes"), ("0", "No")]
             elif f.kind in ("date", "datetime"):
-                opts = [("today", "Today"), ("7d", "Last 7 days"), ("30d", "Last 30 days")]
+                kind, opts = f.kind, DATE_RANGES
+            elif f.kind == "fk" and f.target:
+                kind, opts = "fk", []
+            elif f.kind in ("int", "decimal"):
+                kind, opts = "range", []
             else:
                 continue
-            out.append({"name": name, "label": f.label, "options": opts, "kind": f.kind})
+            out.append({"name": name, "label": f.label, "options": opts, "kind": kind})
         return out
+
+    def filter_text(self, name: str, raw: str, labels: dict[str, str]) -> str:
+        """How an active filter reads on its chip: `Published`, `Nusrat`, `10 – 100`, `≥ 10`."""
+        f = self.fields[name]
+        if f.kind == "fk":
+            return labels.get(raw, raw)
+        if f.kind in ("int", "decimal"):
+            lo, sep, hi = (s.strip() for s in raw.partition(".."))
+            if not sep:
+                return raw
+            return f"{lo} – {hi}" if lo and hi else f"≥ {lo}" if lo else f"≤ {hi}"
+        opt = next((o for o in self.filter_options() if o["name"] == name), None)
+        return dict(opt["options"]).get(raw, raw) if opt else raw
 
     async def count(self, session, stmt: Select | None = None) -> int:
         stmt = stmt if stmt is not None else select(self.model)
@@ -229,11 +338,10 @@ class ModelAdmin:
         rows = await session.execute(select(col, func.count()).group_by(col))
         return {str(v.value if isinstance(v, enum.Enum) else v): n for v, n in rows}
 
-    async def fk_options(self, session, f: Field) -> list[tuple[str, str]]:
-        # ponytail: loads up to 200 related rows into a <select>; add an autocomplete endpoint for big tables.
-        target_pk = inspect(f.target).primary_key[0].key
-        rows = (await session.scalars(select(f.target).order_by(getattr(f.target, target_pk)).limit(200))).all()
-        return [(str(getattr(r, target_pk)), str(r)) for r in rows]
+
+def _cell(text: str) -> str:
+    """Stop spreadsheets from running text that looks like a formula (CSV injection)."""
+    return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
 
 
 def _snake(name: str) -> str:

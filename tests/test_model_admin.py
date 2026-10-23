@@ -48,12 +48,12 @@ def test_defaults(authors):
     assert authors.list_display == ["id", "name", "email", "bio", "active", "born"]
     assert authors.search_fields == ["name", "email"]
     assert authors.list_filter == ["active", "born", "joined"]
-    assert authors.form_fields == ["name", "email", "bio", "active", "born"], "pk and server-default columns stay off the form"
+    assert authors.form_fields == ["name", "email", "bio", "active", "born", "photo", "cv"], "pk and server-default columns stay off the form"
     assert authors.preview_fields == authors.list_display
 
 
 def test_default_fieldset_leaves_board_field_to_its_own_card(posts):
-    assert posts.fieldsets == [("Details", ["title", "author_id", "views", "rating", "meta", "published_at", "summary"])]
+    assert posts.fieldsets == [("Details", ["title", "author_id", "views", "rating", "meta", "published_at", "summary", "tags"])]
 
 
 def test_readonly_fields_stay_off_the_form():
@@ -180,3 +180,77 @@ def test_actions_are_inherited():
             pass
 
     assert set(More(None).actions) == {"publish", "archive", "feature"}
+
+
+######################################################################
+# Computed columns, export values, filter chips, lookups
+######################################################################
+def test_method_columns(posts):
+    p = post(views=1200)
+    assert posts.is_method("reach") and posts.display(p, "reach") == "3,600 people"
+    assert posts.column_label("reach") == "Reach" and not posts.sortable("reach")
+    assert not posts.is_method("label") and not posts.is_method("display"), "ModelAdmin's own methods are not columns"
+    assert not posts.is_method("title")
+
+
+def test_method_column_returning_none(posts):
+    class P(PostAdmin):
+        def nothing(self, obj):
+            return None
+
+    assert P(None).display(post(), "nothing") == "—"
+
+
+def test_model_properties_work_as_columns():
+    class A(AuthorAdmin):
+        list_display = ["id", "name", "__class__.__name__"]
+
+    assert A(None).display(author(), "__class__.__name__") == "Author"
+
+
+def test_export_value(posts):
+    from datetime import datetime
+    p = post(title="=cmd", views=-2, status=Status.review, published_at=datetime(2026, 1, 2), meta={"a": 1}, author=author(name="+X"))
+    assert posts.export_value(p, "title") == "'=cmd"
+    assert posts.export_value(p, "views") == "-2"
+    assert posts.export_value(p, "status") == "Review"
+    assert posts.export_value(p, "published_at") == "2026-01-02T00:00:00"
+    assert posts.export_value(p, "meta") == '{"a": 1}'
+    assert posts.export_value(p, "author") == "'+X"
+    assert posts.export_value(post(rating=None), "rating") == ""
+
+
+def test_filter_text(posts):
+    assert posts.filter_text("status", "review", {}) == "Review"
+    assert posts.filter_text("author_id", "3", {"3": "Nusrat"}) == "Nusrat"
+    assert posts.filter_text("views", "1..9", {}) == "1 – 9"
+    assert posts.filter_text("views", "1..", {}) == "≥ 1"
+    assert posts.filter_text("views", "..9", {}) == "≤ 9"
+    assert posts.filter_text("published_at", "7d", {}) == "Last 7 days"
+
+
+def test_lookup_field(posts):
+    assert posts.lookup_field("author_id").name == "author_id"
+    assert posts.lookup_field("tags").kind == "m2m"
+    assert posts.lookup_field("comments.author_id").target is Author
+    assert posts.lookup_field("title") is None and posts.lookup_field("comments.body") is None
+
+
+def test_inline_spec(posts):
+    (inl,) = posts.inlines
+    assert (inl.name, inl.label, inl.pk, inl.names) == ("comments", "Comments", "id", ["body", "author_id", "likes", "approved"])
+    assert inl.relations == ["author"], "the link back to the parent is not reloaded"
+
+
+def test_inline_defaults():
+    class P(PostAdmin):
+        inlines = ["comments"]
+
+    assert P(None).inlines[0].names == ["author_id", "body", "likes", "approved"]
+
+
+def test_file_fields_as_list():
+    class A(AuthorAdmin):
+        file_fields = ["cv"]
+
+    assert A(None).fields["cv"].kind == "file"

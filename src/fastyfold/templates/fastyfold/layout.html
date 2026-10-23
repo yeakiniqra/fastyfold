@@ -19,7 +19,7 @@
         </a>
         {% for g in nav %}
             {% set on = current is not none and current.group == g.name %}
-            <a href="{{ admin.url(g.models[0].slug) }}" class="group relative flex size-11 items-center justify-center rounded-2xl transition {{ 'bg-white/10 text-white' if on else 'text-stone-500 hover:bg-white/5 hover:text-stone-200' }}">
+            <a href="{{ admin.url(g['items'][0].slug) }}" class="group relative flex size-11 items-center justify-center rounded-2xl transition {{ 'bg-white/10 text-white' if on else 'text-stone-500 hover:bg-white/5 hover:text-stone-200' }}">
                 {{ ui.icon(g.icon, fill=on) }}
                 {% if on %}<span class="absolute -left-[18px] h-6 w-1 rounded-r-full bg-accent"></span>{% endif %}
                 <span class="pointer-events-none absolute left-14 z-50 rounded-lg bg-stone-800 px-2.5 py-1 text-xs font-semibold whitespace-nowrap text-white opacity-0 transition group-hover:opacity-100">{{ g.name }}</span>
@@ -48,7 +48,7 @@
                     <div>
                         <div class="px-2 text-xs font-semibold text-muted">{{ g.name }}</div>
                         <ul class="mt-2 space-y-1">
-                            {% for m in g.models %}
+                            {% for m in g['items'] %}
                                 <li><a href="{{ admin.url(m.slug) }}" class="flex items-center gap-2.5 rounded-xl px-2 py-2 font-medium {{ 'bg-panel text-fg shadow-xs' if current and current.slug == m.slug else 'text-muted hover:bg-panel/60 hover:text-fg' }}">
                                     {{ ui.icon(m.icon, '!text-[18px]') }}<span class="flex-1">{{ m.name_plural }}</span>
                                     {% if m.key %}<span class="kbd">G {{ m.key|upper }}</span>{% endif %}</a></li>
@@ -144,7 +144,7 @@
                     <h3 class="mb-3 text-xs font-bold tracking-widest text-faint uppercase">{{ title }}</h3>
                     <ul class="space-y-2.5">
                         {% for label, keys in rows %}<li class="flex items-center justify-between gap-3"><span class="text-muted">{{ label }}</span>{{ ui.kbd(*keys) }}</li>{% endfor %}
-                        {% if title == 'Everywhere' %}{% for g in nav %}{% for m in g.models if m.key %}
+                        {% if title == 'Everywhere' %}{% for g in nav %}{% for m in g['items'] if m.key %}
                             <li class="flex items-center justify-between gap-3"><span class="text-muted">Go to {{ m.name_plural|lower }}</span>{{ ui.kbd('G', m.key|upper) }}</li>
                         {% endfor %}{% endfor %}{% endif %}
                     </ul>

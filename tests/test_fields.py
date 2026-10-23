@@ -20,7 +20,7 @@ def post_fields():
 def test_kind_per_column_type(post_fields):
     assert {n: f.kind for n, f in post_fields.items()} == {
         "id": "int", "title": "str", "author_id": "fk", "status": "choice", "views": "int",
-        "rating": "decimal", "meta": "json", "published_at": "datetime", "summary": "text",
+        "rating": "decimal", "meta": "json", "published_at": "datetime", "summary": "text", "tags": "m2m",
     }
     author = fields_for(inspect(Author))
     assert author["bio"].kind == "text" and author["active"].kind == "bool" and author["born"].kind == "date"

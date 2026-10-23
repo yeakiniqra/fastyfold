@@ -1,28 +1,69 @@
 """Admin: model registry, auth, and every HTTP view."""
 
+import csv
 import inspect as pyinspect
+import io
+import mimetypes
+import re
+import secrets
+import time
 from contextlib import asynccontextmanager
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Awaitable, Callable
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 from pydantic import ValidationError
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from . import audit
-from .fields import FieldError
-from .model import ModelAdmin
+from .fields import Field, FieldError, fields_for
+from .model import DAYS, Inline, ModelAdmin
 from .security import SESSION_COOKIE, SESSION_MAX_AGE, Signer
+from .storage import IMAGE_TYPES, LocalStorage, check_upload, extension
 
 HERE = Path(__file__).parent
+LOGIN_WINDOW = 15 * 60
+RESERVED = ("login", "logout", "static")
+# Literal class names so Tailwind's scanner finds them.
+SPANS = {3: "xl:col-span-3", 4: "xl:col-span-4", 6: "xl:col-span-6", 8: "xl:col-span-8", 12: "xl:col-span-12"}
 
 Authenticate = Callable[[str, str], Awaitable[str | None]]
 Permission = Callable[[str, str, ModelAdmin], bool]
+
+
+@dataclass
+class Page:
+    """A custom screen from `@admin.page(...)`. Quacks enough like a ModelAdmin for navigation and permissions."""
+    name: str
+    slug: str
+    icon: str
+    group: str
+    key: str | None
+    fn: Callable
+
+    @property
+    def name_plural(self) -> str:
+        return self.name
+
+    def has_permission(self, user: str, perm: str) -> bool:
+        return True
+
+
+@dataclass
+class Widget:
+    title: str
+    icon: str
+    span: int
+    fn: Callable
 
 
 class Admin:
@@ -38,6 +79,10 @@ class Admin:
         permission: Permission | None = None,
         groups: dict[str, str] | None = None,
         site_url: str | None = None,
+        login_attempts: int = 10,
+        media_dir: str | Path | None = None,
+        storage=None,
+        max_upload: int = 10 * 1024 * 1024,
     ):
         self.engine = engine
         self.sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
@@ -49,8 +94,17 @@ class Admin:
         self.permission = permission
         self.group_icons = groups or {}
         self.site_url = site_url
+        self.login_attempts = login_attempts
+        self.storage = storage or (LocalStorage(media_dir) if media_dir else None)
+        self.max_upload = max_upload
         self.models: dict[str, ModelAdmin] = {}
+        self.pages: dict[str, Page] = {}
+        self.widgets: list[Widget] = []
         self.prefix = ""
+        self._by_model: dict[type, ModelAdmin] = {}
+        self._key_fields: dict[type, Field] = {}
+        # ponytail: failed sign-ins live in this process; with several workers each counts its own. Use Redis to share them.
+        self._failures: dict[str, list[float]] = {}
         self._log_ready = False
         self.templates = Jinja2Templates(directory=HERE / "templates")
         self.templates.env.globals["admin"] = self
@@ -62,10 +116,40 @@ class Admin:
     def register(self, cls: type[ModelAdmin]) -> type[ModelAdmin]:
         """Register a ModelAdmin subclass. Usable as a decorator."""
         ma = cls(self)
-        if ma.slug in self.models or ma.slug.startswith("_") or ma.slug in ("login", "logout", "static"):
-            raise ValueError(f"fastyfold: slug {ma.slug!r} is taken or reserved")
+        self._claim(ma.slug)
+        if self.storage is None and any(f.kind in ("image", "file") for f in ma.fields.values()):
+            raise ValueError(f"fastyfold: {cls.__name__} has file fields; pass Admin(media_dir=...) or Admin(storage=...)")
         self.models[ma.slug] = ma
+        self._by_model[ma.model] = ma
         return cls
+
+    def page(self, name: str, *, icon: str = "dashboard", group: str = "Pages", key: str | None = None, slug: str | None = None):
+        """Add a custom screen: `async def fn(request, user)` returning HTML (str) or any Response.
+
+        The HTML is inserted as-is inside the admin layout, so escape untrusted values (`markupsafe.escape`).
+        POSTs to the page need the CSRF token: put `<input type="hidden" name="_csrf" value="...">` from `admin.csrf(request)`.
+        """
+        def wrap(fn):
+            p = Page(name, slug or re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-"), icon, group, key, fn)
+            self._claim(p.slug)
+            self.pages[p.slug] = p
+            return fn
+        return wrap
+
+    def widget(self, title: str, *, icon: str = "insights", span: int = 3):
+        """Add a dashboard card: `async def fn(session, user)` returning a number or text, `{"value", "caption"}`,
+        a list of `(label, number)` pairs (drawn as bars), or None to hide the card."""
+        if span not in SPANS:
+            raise ValueError(f"fastyfold: widget span must be one of {sorted(SPANS)}")
+
+        def wrap(fn):
+            self.widgets.append(Widget(title, icon, span, fn))
+            return fn
+        return wrap
+
+    def _claim(self, slug: str) -> None:
+        if slug in self.models or slug in self.pages or slug.startswith("_") or slug in RESERVED or not slug:
+            raise ValueError(f"fastyfold: slug {slug!r} is taken or reserved")
 
     def mount(self, app: FastAPI, path: str = "/admin") -> None:
         self.prefix = path.rstrip("/")
@@ -87,25 +171,45 @@ class Admin:
         query = {k: v for k, v in query.items() if v not in (None, "")}
         return path + ("?" + urlencode(query, doseq=True) if query else "")
 
+    def file_url(self, key: str | None) -> str:
+        if not key:
+            return ""
+        url = getattr(self.storage, "url", None)
+        return url(key) if url else self.url("_media", key)
+
+    def csrf(self, request: Request) -> str:
+        """The CSRF token for this request's session, for forms on custom pages."""
+        return self.signer.csrf(request.cookies.get(SESSION_COOKIE))
+
+    def label(self, obj) -> str:
+        """How a record is named anywhere in the admin: its ModelAdmin's label, else str(obj)."""
+        ma = self._by_model.get(type(obj))
+        return ma.label(obj) if ma else str(obj)
+
     def _local(self, url: str, default: str) -> str:
         """`url` if it stays inside the admin, else `default`. Blocks `//host` and `/\\host`."""
         inside = url.startswith(self.prefix + "/") and not url.startswith(("//", "/\\"))
         return url if inside else default
 
-    def can(self, user: str, perm: str, ma: ModelAdmin) -> bool:
+    def can(self, user: str, perm: str, ma: ModelAdmin | Page) -> bool:
         if self.permission and not self.permission(user, perm, ma):
             return False
         return ma.has_permission(user, perm)
 
     def groups(self, user: str) -> list[dict]:
-        """Models the user may view, grouped for the rail and context panel."""
+        """Models and pages the user may view, grouped for the rail and context panel."""
         out: dict[str, dict] = {}
-        for ma in self.models.values():
-            if not self.can(user, "view", ma):
+        for item in [*self.models.values(), *self.pages.values()]:
+            if not self.can(user, "view", item):
                 continue
-            g = out.setdefault(ma.group, {"name": ma.group, "icon": self.group_icons.get(ma.group, ma.icon), "models": []})
-            g["models"].append(ma)
+            g = out.setdefault(item.group, {"name": item.group, "icon": self.group_icons.get(item.group, item.icon),
+                                            "models": [], "pages": [], "items": []})
+            g["pages" if isinstance(item, Page) else "models"].append(item)
+            g["items"].append(item)
         return list(out.values())
+
+    def _visible(self, user: str) -> list[ModelAdmin]:
+        return [ma for g in self.groups(user) for ma in g["models"]]
 
     # ── request helpers ───────────────────────────────────────────────────
     def _user(self, request: Request) -> str:
@@ -136,7 +240,7 @@ class Admin:
         ctx.setdefault("current", None)
         ctx["csrf"] = self.signer.csrf(cookie) if cookie else ""
         ctx["nav"] = self.groups(ctx["user"]) if ctx["user"] else []
-        ctx["jumps"] = {"d": self.url(""), **{m.key.lower(): self.url(m.slug) for g in ctx["nav"] for m in g["models"] if m.key}}
+        ctx["jumps"] = {"d": self.url(""), **{m.key.lower(): self.url(m.slug) for g in ctx["nav"] for m in g["items"] if m.key}}
         ctx["msg"] = request.query_params.get("msg", "")
         return self.templates.TemplateResponse(request, f"fastyfold/{template}", ctx, status_code=status)
 
@@ -144,6 +248,34 @@ class Admin:
     def _greeting() -> str:
         h = datetime.now().hour
         return "Good morning" if h < 12 else "Good afternoon" if h < 18 else "Good evening"
+
+    def _blocked(self, ip: str) -> bool:
+        now = time.monotonic()
+        hits = [t for t in self._failures.get(ip, []) if now - t < LOGIN_WINDOW]
+        if hits:
+            self._failures[ip] = hits
+        else:
+            self._failures.pop(ip, None)
+        return bool(self.login_attempts) and len(hits) >= self.login_attempts
+
+    @staticmethod
+    def _list_args(ma: ModelAdmin, p) -> tuple[str, dict[str, str], str | None]:
+        return p.get("q", ""), {f["name"]: p.get(f"f_{f['name']}", "") for f in ma.filter_options()}, p.get("sort") or None
+
+    @staticmethod
+    def _csv(ma: ModelAdmin, rows) -> Response:
+        # ponytail: builds the whole file in memory; stream with session.stream_scalars() for very large exports.
+        buf = io.StringIO()
+        out = csv.writer(buf)
+        out.writerow([ma.column_label(n) for n in ma.export_fields])
+        for obj in rows:
+            out.writerow([ma.export_value(obj, n) for n in ma.export_fields])
+        return Response(buf.getvalue(), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="{ma.slug}.csv"'})
+
+    @staticmethod
+    def _files(ma: ModelAdmin, obj) -> list[str]:
+        return [getattr(obj, n) for n, f in ma.fields.items() if f.kind in ("image", "file") and getattr(obj, n)]
 
     # ── routes ────────────────────────────────────────────────────────────
     def _routes(self) -> None:
@@ -160,9 +292,16 @@ class Admin:
             form = await request.form()
             username, password = str(form.get("username", "")), str(form.get("password", ""))
             next_url = str(form.get("next", ""))
+            # Behind a proxy, run uvicorn with --proxy-headers so this is the visitor's address.
+            ip = request.client.host if request.client else "unknown"
+            if self._blocked(ip):
+                return self.render(request, "login.html", 429, next=next_url, user=None, username=username,
+                                   error="Too many failed sign-ins. Try again in 15 minutes.")
             user = await self.authenticate(username, password)
             if not user:
+                self._failures.setdefault(ip, []).append(time.monotonic())
                 return self.render(request, "login.html", 401, next=next_url, user=None, error="That username and password didn't match.", username=username)
+            self._failures.pop(ip, None)
             resp = RedirectResponse(self._local(next_url, self.url("")), 303)
             resp.set_cookie(SESSION_COOKIE, self.signer.dump(user), max_age=SESSION_MAX_AGE if form.get("remember") else None,
                             httponly=True, samesite="lax", secure=request.url.scheme == "https", path=self.prefix or "/")
@@ -176,21 +315,23 @@ class Admin:
 
         @r.get("/", response_class=HTMLResponse, include_in_schema=False)
         async def dashboard(request: Request, user: str = User):
-            visible = [ma for g in self.groups(user) for ma in g["models"]]
+            visible = self._visible(user)
             async with self.session() as s:
                 counts = {ma.slug: await ma.count(s) for ma in visible}
                 lead = next((ma for ma in visible if ma.board_field), visible[0] if visible else None)
                 mix = await lead.board_counts(s) if lead and lead.board_field else {}
                 latest = (await s.scalars(lead.base_query().order_by(getattr(lead.model, lead.pk).desc()).limit(5))).all() if lead else []
-                activity = await audit.recent(s, limit=6)
+                activity = await audit.recent(s, models=[ma.slug for ma in visible], limit=6)
+                widgets = [(w, value) for w in self.widgets if (value := await w.fn(s, user)) is not None]
             return self.render(request, "dashboard.html", user=user, models=visible, counts=counts, lead=lead,
-                               mix=mix, latest=latest, activity=activity, greeting=self._greeting())
+                               mix=mix, latest=latest, activity=activity, widgets=widgets, spans=SPANS, greeting=self._greeting())
 
         @r.get("/_search", include_in_schema=False)
         async def search(q: str = "", user: str = User):
             q = q.strip()
             groups = []
-            visible = [ma for g in self.groups(user) for ma in g["models"]]
+            nav = [item for g in self.groups(user) for item in g["items"]]
+            visible = [m for m in nav if isinstance(m, ModelAdmin)]
             if q:
                 records = []
                 async with self.session() as s:
@@ -203,11 +344,14 @@ class Admin:
                 groups.append({"title": "Records", "items": records[:8]})
             ql = q.lower()
             groups.append({"title": "Models", "items": [
-                {"label": ma.name_plural, "sub": f"Go to {ma.name_plural.lower()}", "url": self.url(ma.slug), "icon": ma.icon,
-                 "keys": ["G", ma.key.upper()] if ma.key else None}
-                for ma in visible if not q or ql in ma.name_plural.lower()]})
+                {"label": m.name_plural, "sub": f"Go to {m.name_plural.lower()}", "url": self.url(m.slug), "icon": m.icon,
+                 "keys": ["G", m.key.upper()] if m.key else None}
+                for m in nav if not q or ql in m.name_plural.lower()]})
             actions = [{"label": f"New {ma.name.lower()}", "sub": ma.name_plural, "url": self.url(ma.slug, "new"), "icon": "add"}
                        for ma in visible if self.can(user, "add", ma) and (not q or ql in f"new {ma.name.lower()}")]
+            if q:
+                actions += [{"label": f"Export {ma.name_plural.lower()}", "sub": "CSV", "url": self.url(ma.slug, "export.csv"), "icon": "download"}
+                            for ma in visible if self.can(user, "export", ma) and ql in f"export {ma.name_plural.lower()}"]
             for label, icon, cmd, keys in (("Toggle dark mode", "dark_mode", "theme", ["T"]), ("Keyboard shortcuts", "keyboard", "keys", ["?"]),
                                            ("Audit log", "history", None, None)):
                 if not q or ql in label.lower():
@@ -216,21 +360,45 @@ class Admin:
             return JSONResponse({"groups": [g for g in groups if g["items"]]})
 
         @r.get("/_log", response_class=HTMLResponse, include_in_schema=False)
-        async def log(request: Request, page: int = 1, user: str = User):
+        async def log(request: Request, page: int = 1, who: str = "", model: str = "", action: str = "", days: str = "",
+                      user: str = User):
+            models = self._visible(user)
+            visible = [ma.slug for ma in models]
+            since = None
+            if days in DAYS:
+                since = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=DAYS[days])
+            filters = {"who": who, "model": model if model in visible else "", "action": action, "days": days if since else ""}
             async with self.session() as s:
-                entries = await audit.recent(s, limit=51, offset=(max(page, 1) - 1) * 50)
-            return self.render(request, "log.html", user=user, entries=entries[:50], page=page, has_more=len(entries) > 50)
+                entries = await audit.recent(s, models=[model] if filters["model"] else visible, user=who or None,
+                                             action=action or None, since=since, limit=51, offset=(max(page, 1) - 1) * 50)
+                options = {"who": [(u, u) for u in await audit.distinct(s, "user", models=visible)],
+                           "model": [(ma.slug, ma.name_plural) for ma in models],
+                           "action": [(a, a) for a in await audit.distinct(s, "action", models=visible)],
+                           "days": [("today", "Today"), ("7d", "Last 7 days"), ("30d", "Last 30 days")]}
+            return self.render(request, "log.html", user=user, entries=entries[:50], page=page, has_more=len(entries) > 50,
+                               filters=filters, options=options)
+
+        @r.get("/_media/{key:path}", include_in_schema=False)
+        async def media(key: str, user: str = User):
+            path = self.storage.path(key) if isinstance(self.storage, LocalStorage) else None
+            if path is None:
+                raise HTTPException(404, "Not found")
+            ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            # Only real image types render inline; everything else downloads, sandboxed and never sniffed.
+            return FileResponse(path, media_type=ctype if ctype in IMAGE_TYPES else "application/octet-stream", filename=path.name,
+                                content_disposition_type="inline" if ctype in IMAGE_TYPES else "attachment",
+                                headers={"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox"})
 
         @r.get("/{slug}", response_class=HTMLResponse, include_in_schema=False)
         async def list_view(request: Request, slug: str, user: str = User):
+            if slug in self.pages:
+                return await self._page(request, self.pages[slug], user)
             ma = self._model(slug, user)
             p = request.query_params
             view = p.get("view") or ("board" if ma.board_field else "table")
             if view == "board" and not ma.board_field:
                 view = "table"
-            q = p.get("q", "")
-            filters = {f["name"]: p.get(f"f_{f['name']}", "") for f in ma.filter_options()}
-            sort = p.get("sort") or None
+            q, filters, sort = self._list_args(ma, p)
             raw_page = p.get("page", "")
             page = max(1, int(raw_page)) if raw_page.isdigit() else 1
             stmt = ma.list_query(q=q, filters=filters, sort=sort)
@@ -240,16 +408,54 @@ class Admin:
                 # ponytail: OFFSET paging slows down past ~100k rows; switch to keyset paging on the sort column.
                 rows = (await s.scalars(stmt.limit(per).offset((page - 1) * per))).all()
                 counts = await ma.board_counts(s)
+                labels = {n: await self._labels(s, ma.fields[n].target, [v]) for n, v in filters.items() if v and ma.fields[n].kind == "fk"}
+            chips = [{"name": n, "label": ma.fields[n].label, "text": ma.filter_text(n, v, labels.get(n, {}))}
+                     for n, v in filters.items() if ma.filter_condition(n, v) is not None]
             state = {"view": view, "q": q, "sort": sort, "page": page, **{f"f_{k}": v for k, v in filters.items()}}
             return self.render(request, "list.html", user=user, ma=ma, current=ma, rows=rows, total=total, page=page,
                                pages=max(1, -(-total // per)), view=view, q=q, filters=filters, sort=sort or "",
-                               counts=counts, state=state, active_filters={k: v for k, v in filters.items() if v})
+                               counts=counts, state=state, chips=chips, fk_labels=labels)
+
+        @r.post("/{slug}", include_in_schema=False, dependencies=[Csrf])
+        async def page_post(request: Request, slug: str, user: str = User):
+            if slug not in self.pages:
+                raise HTTPException(405, "Method not allowed")
+            return await self._page(request, self.pages[slug], user)
+
+        @r.get("/{slug}/export.csv", include_in_schema=False)
+        async def export(request: Request, slug: str, user: str = User):
+            ma = self._model(slug, user, "export")
+            q, filters, sort = self._list_args(ma, request.query_params)
+            async with self.session() as s:
+                rows = (await s.scalars(ma.list_query(q=q, filters=filters, sort=sort))).all()
+            return self._csv(ma, rows)
+
+        @r.get("/{slug}/_lookup/{path}", include_in_schema=False)
+        async def lookup(slug: str, path: str, q: str = "", user: str = User):
+            ma = self._model(slug, user)
+            f = ma.lookup_field(path)
+            if f is None:
+                raise HTTPException(404, "Unknown field")
+            target = self._by_model.get(f.target)
+            if target is not None and not self.can(user, "view", target):
+                raise HTTPException(403, "You don't have permission to do that.")
+            key = self._key_field(f.target).name
+            async with self.session() as s:
+                if target is not None:
+                    stmt = target.list_query(q=q.strip())
+                else:
+                    stmt = select(f.target).order_by(getattr(f.target, key))
+                    text = [getattr(f.target, n) for n, x in fields_for(sa_inspect(f.target)).items() if x.kind == "str"]
+                    if q.strip() and text:
+                        stmt = stmt.where(or_(*[c.icontains(q.strip(), autoescape=True) for c in text]))
+                rows = (await s.scalars(stmt.limit(20))).all()
+            return JSONResponse({"results": [{"value": str(getattr(o, key)), "label": self.label(o)} for o in rows]})
 
         @r.get("/{slug}/new", response_class=HTMLResponse, include_in_schema=False)
         async def new_form(request: Request, slug: str, user: str = User):
             ma = self._model(slug, user, "add")
             async with self.session() as s:
-                return await self._form(request, s, ma, user, None, {}, {})
+                return await self._form(request, s, ma, user, None)
 
         @r.post("/{slug}/new", include_in_schema=False, dependencies=[Csrf])
         async def create(request: Request, slug: str, user: str = User):
@@ -260,8 +466,8 @@ class Admin:
         async def run_action(request: Request, slug: str, user: str = User):
             form = await request.form()
             name = str(form.get("action", ""))
-            ma = self._model(slug, user, "delete" if name == "delete" else name)
-            if name != "delete" and name not in ma.actions:
+            ma = self._model(slug, user, name)
+            if name not in ("delete", "export") and name not in ma.actions:
                 raise HTTPException(400, "Unknown action")
             ids = [i for i in form.getlist("ids") if i]
             if not ids:
@@ -270,11 +476,15 @@ class Admin:
                 keys = [ma.fields[ma.pk].parse(i) for i in ids]
             except FieldError:
                 raise HTTPException(400, "Invalid id") from None
+            stale = []
             async with self.session() as s:
-                objs = (await s.scalars(ma.base_query().where(getattr(ma.model, ma.pk).in_(keys)))).all()
+                objs = (await s.scalars(ma.base_query().where(getattr(ma.model, ma.pk).in_(keys)).order_by(getattr(ma.model, ma.pk)))).all()
+                if name == "export":
+                    return self._csv(ma, objs)
                 if name == "delete":
                     for o in objs:
                         audit.record(s, user=user, action="delete", model=ma.slug, obj_id=ma.pk_of(o), obj_repr=ma.label(o))
+                        stale += self._files(ma, o)
                         await ma.delete(s, o)
                     label = "Deleted"
                 else:
@@ -283,6 +493,8 @@ class Admin:
                         audit.record(s, user=user, action=name, model=ma.slug, obj_id=ma.pk_of(o), obj_repr=ma.label(o))
                     label = ma.actions[name]["label"]
                 await s.commit()
+            for key in stale:
+                await self.storage.delete(key)
             back = self._local(str(form.get("next", "")), self.url(ma.slug))
             sep = "&" if "?" in back else "?"
             return RedirectResponse(f"{back}{sep}{urlencode({'msg': f'{label}: {len(objs)} {ma.name_plural.lower()}'})}", 303)
@@ -300,7 +512,7 @@ class Admin:
             ma = self._model(slug, user)
             async with self.session() as s:
                 obj = await self._get(s, ma, pk)
-                return await self._form(request, s, ma, user, obj, {}, {})
+                return await self._form(request, s, ma, user, obj)
 
         @r.post("/{slug}/{pk}", include_in_schema=False, dependencies=[Csrf])
         async def update(request: Request, slug: str, pk: str, user: str = User):
@@ -312,10 +524,12 @@ class Admin:
             ma = self._model(slug, user, "delete")
             async with self.session() as s:
                 obj = await self._get(s, ma, pk)
-                label = ma.label(obj)
+                label, stale = ma.label(obj), self._files(ma, obj)
                 await ma.delete(s, obj)
                 audit.record(s, user=user, action="delete", model=ma.slug, obj_id=pk, obj_repr=label)
                 await s.commit()
+            for key in stale:
+                await self.storage.delete(key)
             return RedirectResponse(self.url(ma.slug, msg=f"Deleted {label}"), 303)
 
         @r.post("/{slug}/{pk}/move", include_in_schema=False, dependencies=[Csrf])
@@ -337,6 +551,48 @@ class Admin:
                 await s.commit()
             return Response(status_code=204)
 
+    # ── pages ─────────────────────────────────────────────────────────────
+    async def _page(self, request: Request, page: Page, user: str):
+        if not self.can(user, "view", page):
+            raise HTTPException(403, "You don't have permission to do that.")
+        out = await page.fn(request, user)
+        if isinstance(out, Response):
+            return out
+        return self.render(request, "page.html", user=user, page=page, current=page, body=Markup(out or ""))
+
+    # ── related rows ──────────────────────────────────────────────────────
+    def _key_field(self, target: type) -> Field:
+        if target not in self._key_fields:
+            mapper = sa_inspect(target)
+            self._key_fields[target] = fields_for(mapper)[mapper.primary_key[0].key]
+        return self._key_fields[target]
+
+    async def _objects(self, s, target: type, ids: list[str]) -> list | None:
+        """The rows for `ids`, or None if any id is malformed or missing."""
+        kf = self._key_field(target)
+        try:
+            keys = {kf.parse(i) for i in ids}
+        except FieldError:
+            return None
+        if not keys:
+            return []
+        rows = (await s.scalars(select(target).where(getattr(target, kf.name).in_(keys)))).all()
+        return list(rows) if len(rows) == len(keys) else None
+
+    async def _labels(self, s, target: type, ids) -> dict[str, str]:
+        kf = self._key_field(target)
+        keys = set()
+        for i in ids:
+            try:
+                if i not in ("", None):
+                    keys.add(kf.parse(str(i)))
+            except FieldError:
+                pass
+        if not keys:
+            return {}
+        rows = (await s.scalars(select(target).where(getattr(target, kf.name).in_(keys)))).all()
+        return {str(getattr(o, kf.name)): self.label(o) for o in rows}
+
     # ── form helpers ──────────────────────────────────────────────────────
     async def _get(self, s, ma: ModelAdmin, pk: str):
         try:
@@ -348,39 +604,154 @@ class Admin:
             raise HTTPException(404, f"{ma.name} not found")
         return obj
 
-    async def _form(self, request, s, ma: ModelAdmin, user: str, obj, values: dict, errors: dict, status: int = 200):
-        fk_options = {n: await ma.fk_options(s, ma.fields[n]) for n in ma.form_fields if ma.fields[n].kind == "fk" and ma.fields[n].target}
-        if not values:
-            values = {n: ma.fields[n].form_value(getattr(obj, n) if obj is not None else ma.fields[n].default) for n in ma.form_fields}
+    async def _form(self, request, s, ma: ModelAdmin, user: str, obj, values: dict | None = None, errors: dict | None = None,
+                    status: int = 200, inline_rows: dict | None = None):
+        errors = errors or {}
+        if values is None:
+            values = {}
+            for n in ma.form_fields:
+                f = ma.fields[n]
+                if f.kind == "m2m":
+                    key = self._key_field(f.target).name
+                    values[n] = [str(getattr(o, key)) for o in getattr(obj, n)] if obj is not None else []
+                else:
+                    values[n] = f.form_value(getattr(obj, n) if obj is not None else f.default)
+        if inline_rows is None:
+            inline_rows = {}
+            for inl in ma.inlines:
+                children = sorted(getattr(obj, inl.name), key=lambda c: getattr(c, inl.pk)) if obj is not None else []
+                inline_rows[inl.name] = [{"i": i, "id": str(getattr(c, inl.pk)), "deleted": False,
+                                          "values": {n: inl.fields[n].form_value(getattr(c, n)) for n in inl.names}}
+                                         for i, c in enumerate(children)]
+        # Labels for every autocomplete's current value(s).
+        selected = {}
+        for n in ma.form_fields:
+            f = ma.fields[n]
+            if f.kind in ("fk", "m2m") and f.target:
+                ids = values.get(n) if f.kind == "m2m" else [values.get(n)]
+                labels = await self._labels(s, f.target, ids)
+                selected[n] = [{"value": i, "label": labels[i]} for i in ids if i in labels]
+        for inl in ma.inlines:
+            for n in inl.names:
+                f = inl.fields[n]
+                if f.kind == "fk" and f.target:
+                    labels = await self._labels(s, f.target, [row["values"][n] for row in inline_rows[inl.name]])
+                    for row in inline_rows[inl.name]:
+                        v = row["values"][n]
+                        selected[f"{inl.name}-{row['i']}-{n}"] = [{"value": v, "label": labels[v]}] if v in labels else []
         history = await audit.recent(s, model=ma.slug, object_id=ma.pk_of(obj), limit=6) if obj is not None else []
+        actions = [a for a in ma.actions.values() if self.can(user, a["name"], ma)] if obj is not None else []
+        multipart = any(ma.fields[n].kind in ("image", "file") for n in ma.form_fields)
         return self.render(request, "form.html", status, user=user, ma=ma, current=ma, obj=obj, values=values, errors=errors,
-                           fk_options=fk_options, history=history, can_change=self.can(user, "change", ma),
-                           can_delete=obj is not None and self.can(user, "delete", ma))
+                           selected=selected, inline_rows=inline_rows, history=history, actions=actions, multipart=multipart,
+                           can_change=self.can(user, "change", ma), can_delete=obj is not None and self.can(user, "delete", ma))
+
+    @staticmethod
+    def _inline_rows(form, inl: Inline, errors: dict) -> list[dict]:
+        """Rows posted as `<inline>-<i>-<field>`, parsed; blank new rows are dropped."""
+        pattern = re.compile(rf"{re.escape(inl.name)}-(\d+)-")
+        rows = []
+        for i in sorted({int(m.group(1)) for k in form.keys() if (m := pattern.match(k))}):
+            prefix = f"{inl.name}-{i}-"
+            raw = {n: form.get(prefix + n) for n in inl.names}
+            row = {"i": i, "id": str(form.get(prefix + "id") or ""), "deleted": bool(form.get(prefix + "_delete")),
+                   "values": {n: str(v or "") for n, v in raw.items()}, "data": {}}
+            if not row["id"] and not any(v for n, v in row["values"].items() if inl.fields[n].kind != "bool"):
+                continue
+            if not row["deleted"]:
+                for n in inl.names:
+                    try:
+                        row["data"][n] = inl.fields[n].parse(raw[n])
+                    except FieldError as e:
+                        errors[prefix + n] = str(e)
+            rows.append(row)
+        return rows
+
+    @staticmethod
+    async def _apply_inline(s, obj, inl: Inline, rows: list[dict]) -> str:
+        collection = getattr(obj, inl.name)
+        existing = {str(getattr(c, inl.pk)): c for c in collection}
+        added = changed = removed = 0
+        for row in rows:
+            child = existing.get(row["id"])
+            if row["id"] and child is None:
+                continue        # not one of this record's children
+            if row["deleted"]:
+                if child is not None:
+                    collection.remove(child)
+                    await s.delete(child)
+                    removed += 1
+                continue
+            if child is None:
+                child = inl.model()
+                collection.append(child)
+                added += 1
+            elif any(getattr(child, k) != v for k, v in row["data"].items()):
+                changed += 1
+            for k, v in row["data"].items():
+                setattr(child, k, v)
+        return ", ".join(f"{n} {word}" for n, word in ((added, "added"), (changed, "changed"), (removed, "removed")) if n)
 
     async def _save(self, request: Request, ma: ModelAdmin, user: str, pk: str | None):
         form = await request.form()
-        data, errors = {}, {}
-        for name in ma.form_fields:
-            f = ma.fields[name]
-            if f.readonly:
-                continue
-            try:
-                data[name] = f.parse(form.get(name))
-            except FieldError as e:
-                errors[name] = str(e)
-        if not errors and ma.schema is not None:
-            try:
-                valid = ma.schema.model_validate(data)
-                data.update({k: getattr(valid, k) for k in data if hasattr(valid, k)})
-            except ValidationError as e:
-                for err in e.errors():
-                    errors[str(err["loc"][0]) if err["loc"] else "__all__"] = err["msg"]
+        stale = []
         async with self.session() as s:
             obj = await self._get(s, ma, pk) if pk is not None else None
-            if errors:
-                values = {n: str(form.get(n, "")) for n in ma.form_fields}
-                return await self._form(request, s, ma, user, obj, values, errors, 422)
             is_new = obj is None
+            data, m2m, files, errors = {}, {}, {}, {}
+            for name in ma.form_fields:
+                f = ma.fields[name]
+                if f.readonly:
+                    continue
+                if f.kind == "m2m":
+                    m2m[name] = [str(v) for v in form.getlist(name) if v]
+                elif f.kind in ("image", "file"):
+                    upload = form.get(name)
+                    if getattr(upload, "filename", None):
+                        # ponytail: max_upload is checked after Starlette has spooled the body; cap request size at the proxy too.
+                        content = await upload.read()
+                        try:
+                            check_upload(f.kind, upload.filename, content, self.max_upload)
+                            files[name] = (extension(upload.filename), content, upload.content_type)
+                        except FieldError as e:
+                            errors[name] = str(e)
+                    elif form.get(f"{name}__clear"):
+                        files[name] = None
+                    current = None if is_new else getattr(obj, name)
+                    if f.required and name not in errors and files.get(name, current) is None:
+                        errors[name] = "This field is required."
+                else:
+                    try:
+                        data[name] = f.parse(form.get(name))
+                    except FieldError as e:
+                        errors[name] = str(e)
+            targets = {}
+            for name, ids in m2m.items():
+                found = await self._objects(s, ma.fields[name].target, ids)
+                if found is None:
+                    errors[name] = "Select a valid option."
+                else:
+                    targets[name] = found
+            rows = {inl.name: self._inline_rows(form, inl, errors) for inl in ma.inlines}
+            if not errors and ma.schema is not None:
+                try:
+                    valid = ma.schema.model_validate(data)
+                    data.update({k: getattr(valid, k) for k in data if hasattr(valid, k)})
+                except ValidationError as e:
+                    for err in e.errors():
+                        errors[str(err["loc"][0]) if err["loc"] else "__all__"] = err["msg"]
+            if errors:
+                values = {}
+                for n in ma.form_fields:
+                    kind = ma.fields[n].kind
+                    if kind == "m2m":
+                        values[n] = m2m.get(n, [])
+                    elif kind in ("image", "file"):
+                        values[n] = (getattr(obj, n) if obj is not None else None) or ""
+                    else:
+                        values[n] = str(form.get(n, ""))
+                return await self._form(request, s, ma, user, obj, values, errors, 422, inline_rows=rows)
+
             obj = obj if obj is not None else ma.model()
             changes = {}
             for k, v in data.items():
@@ -388,6 +759,23 @@ class Admin:
                 if old != v:
                     changes[k] = [ma.fields[k].display(old) if not is_new else None, ma.fields[k].display(v)]
                     setattr(obj, k, v)
+            for name, objs in targets.items():
+                old = list(getattr(obj, name))
+                if {id(o) for o in old} != {id(o) for o in objs}:   # same session, so one instance per row
+                    changes[name] = [", ".join(map(self.label, old)) or None, ", ".join(map(self.label, objs)) or None]
+                    setattr(obj, name, objs)
+            for name, upload in files.items():
+                old = getattr(obj, name)
+                key = None if upload is None else await self.storage.save(f"{ma.slug}/{secrets.token_hex(16)}{upload[0]}", upload[1], upload[2])
+                if key != old:
+                    f = ma.fields[name]
+                    changes[name] = [f.display(old) if old else None, f.display(key) if key else None]
+                    setattr(obj, name, key)
+                    if old:
+                        stale.append(old)
+            for inl in ma.inlines:
+                if summary := await self._apply_inline(s, obj, inl, rows[inl.name]):
+                    changes[inl.name] = [None, summary]
             maybe = ma.save(s, obj, is_new)
             if pyinspect.isawaitable(maybe):
                 await maybe
@@ -396,6 +784,8 @@ class Admin:
                          obj_repr=ma.label(obj), changes=changes)
             await s.commit()
             new_pk = ma.pk_of(obj)
+        for key in stale:
+            await self.storage.delete(key)
         label = ma.label(obj)
         if form.get("_continue"):
             return RedirectResponse(self.url(ma.slug, new_pk, msg=f"Saved {label}"), 303)

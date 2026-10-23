@@ -19,7 +19,7 @@
             {% endfor %}
         </ul>
     {% endif %}
-    {% set siblings = (nav | selectattr('name', 'equalto', ma.group) | first).models | rejectattr('slug', 'equalto', ma.slug) | list %}
+    {% set siblings = (nav | selectattr('name', 'equalto', ma.group) | first)['items'] | rejectattr('slug', 'equalto', ma.slug) | list %}
     {% if siblings %}
         <div class="mt-8 px-2 text-xs font-semibold text-muted">{{ ma.group }}</div>
         <ul class="mt-2 space-y-1">
@@ -53,18 +53,21 @@
             </form>
             {% if ma.filter_options() %}
                 <button type="button" class="pill-plain" @click="filters = true">{{ ui.icon('filter_alt', '!text-[18px]') }}Filter
-                    {% if active_filters %}<span class="rounded-full bg-accent px-1.5 text-[11px] text-white">{{ active_filters | length }}</span>{% else %}<span class="kbd">F</span>{% endif %}</button>
+                    {% if chips %}<span class="rounded-full bg-accent px-1.5 text-[11px] text-white">{{ chips | length }}</span>{% else %}<span class="kbd">F</span>{% endif %}</button>
+            {% endif %}
+            {% if admin.can(user, 'export', ma) %}
+                <a href="{{ admin.url(ma.slug, 'export.csv', **dict(state, view=None, page=None)) }}" class="pill-plain" data-export download>{{ ui.icon('download', '!text-[18px]') }}Export</a>
             {% endif %}
             {% if can_add %}<a href="{{ admin.url(ma.slug, 'new') }}" class="pill-accent pr-2" data-new>{{ ui.icon('add', '!text-[18px]') }}New {{ ma.name | lower }}<span class="kbd ml-1 bg-white/20 text-white shadow-none">N</span></a>{% endif %}
         </div>
     </div>
 
-    {% if active_filters or q %}
+    {% if chips or q %}
         <div class="mt-4 flex flex-wrap items-center gap-2">
             {% if q %}<a href="{{ admin.url(ma.slug, **dict(state, q=None, page=None)) }}" class="inline-flex h-8 items-center gap-1.5 rounded-full bg-accent-soft pr-1.5 pl-3 text-xs font-semibold text-accent-ink">Search: “{{ q }}” <span class="flex size-5 items-center justify-center rounded-full hover:bg-accent/15">{{ ui.icon('close', '!text-[14px]') }}</span></a>{% endif %}
-            {% for opt in ma.filter_options() if filters.get(opt.name) %}
-                <a href="{{ admin.url(ma.slug, **dict(state, page=None, **{'f_' ~ opt.name: None})) }}" class="inline-flex h-8 items-center gap-1.5 rounded-full bg-accent-soft pr-1.5 pl-3 text-xs font-semibold text-accent-ink">
-                    {{ opt.label }}: {{ dict(opt.options).get(filters[opt.name], filters[opt.name]) }} <span class="flex size-5 items-center justify-center rounded-full hover:bg-accent/15">{{ ui.icon('close', '!text-[14px]') }}</span></a>
+            {% for c in chips %}
+                <a href="{{ admin.url(ma.slug, **dict(state, page=None, **{'f_' ~ c.name: None})) }}" class="inline-flex h-8 items-center gap-1.5 rounded-full bg-accent-soft pr-1.5 pl-3 text-xs font-semibold text-accent-ink" data-chip>
+                    {{ c.label }}: {{ c.text }} <span class="flex size-5 items-center justify-center rounded-full hover:bg-accent/15">{{ ui.icon('close', '!text-[14px]') }}</span></a>
             {% endfor %}
             <a href="{{ admin.url(ma.slug, view=view) }}" class="text-xs font-semibold text-muted hover:text-fg">Clear all</a>
         </div>
@@ -84,7 +87,7 @@
                         {% for name in ma.list_display %}
                             {% set sorted = sort.lstrip('-') == name %}
                             <th class="px-3 py-4 {{ 'text-right' if ma.fields.get(name) and ma.fields[name].kind in ('int', 'decimal') and name != ma.pk }}">
-                                {% if name in ma.fields %}
+                                {% if ma.sortable(name) %}
                                     <a href="{{ admin.url(ma.slug, **dict(state, sort=('-' if sorted and not sort.startswith('-') else '') ~ name, page=None)) }}" class="inline-flex items-center gap-1 hover:text-fg {{ 'text-fg' if sorted }}">
                                         {{ ma.column_label(name) }}{% if sorted %}{{ ui.icon('arrow_downward' if sort.startswith('-') else 'arrow_upward', '!text-[14px]') }}{% endif %}</a>
                                 {% else %}{{ ma.column_label(name) }}{% endif %}
@@ -125,6 +128,9 @@
             {% for a in ma.actions.values() if admin.can(user, a.name, ma) %}
                 <button name="action" value="{{ a.name }}" class="pill h-9 hover:bg-white/10" {% if a.key %}data-action-key="{{ a.key | lower }}"{% endif %} {% if a.confirm %}onclick='return confirm({{ a.confirm | tojson }})'{% endif %}>{{ ui.icon(a.icon, '!text-[18px]') }}{{ a.label }}{% if a.key %}<span class="kbd bg-white/20 text-white shadow-none">{{ a.key | upper }}</span>{% endif %}</button>
             {% endfor %}
+            {% if admin.can(user, 'export', ma) %}
+                <button name="action" value="export" class="pill h-9 hover:bg-white/10">{{ ui.icon('download', '!text-[18px]') }}Export</button>
+            {% endif %}
             {% if can_delete %}
                 <button name="action" value="delete" class="pill h-9 text-rose-300 hover:bg-white/10" onclick='return confirm({{ ("Delete the selected " ~ ma.name_plural | lower ~ "? This cannot be undone.") | tojson }})'>{{ ui.icon('delete', '!text-[18px]') }}Delete</button>
             {% endif %}
@@ -199,13 +205,26 @@
         <form method="get" class="float absolute top-4 right-4 bottom-4 flex w-[400px] flex-col">
             <input type="hidden" name="view" value="{{ view }}">{% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}{% if sort %}<input type="hidden" name="sort" value="{{ sort }}">{% endif %}
             <div class="flex items-center justify-between px-6 pt-6">
-                <div><h2 class="text-lg font-extrabold">Filters</h2><p class="text-muted">{{ active_filters | length }} active</p></div>
+                <div><h2 class="text-lg font-extrabold">Filters</h2><p class="text-muted">{{ chips | length }} active</p></div>
                 <button type="button" class="flex size-10 items-center justify-center rounded-full bg-soft hover:bg-line" @click="filters = false">{{ ui.icon('close') }}</button>
             </div>
             <div class="flex-1 space-y-7 overflow-y-auto p-6">
                 {% for opt in ma.filter_options() %}
                     <fieldset>
                         <legend class="field-label">{{ opt.label }}</legend>
+                        {% if opt.kind == 'fk' %}
+                            {% set v = filters.get(opt.name, '') %}
+                            {{ ui.combobox(('f_' ~ opt.name) | tojson, [{'value': v, 'label': fk_labels.get(opt.name, {}).get(v)}] if fk_labels.get(opt.name, {}).get(v) else [],
+                                           admin.url(ma.slug, '_lookup', opt.name)) }}
+                        {% elif opt.kind == 'range' %}
+                            {% set lo, _, hi = filters.get(opt.name, '').partition('..') if '..' in filters.get(opt.name, '') else (filters.get(opt.name, ''), '', filters.get(opt.name, '')) %}
+                            <div class="flex items-center gap-2" x-data='{ lo: {{ lo | tojson }}, hi: {{ hi | tojson }} }'>
+                                <input type="number" step="any" x-model="lo" class="field" placeholder="Min" aria-label="{{ opt.label }} from">
+                                <span class="text-faint">–</span>
+                                <input type="number" step="any" x-model="hi" class="field" placeholder="Max" aria-label="{{ opt.label }} to">
+                                <input type="hidden" name="f_{{ opt.name }}" :value="(lo !== '' || hi !== '') ? `${lo}..${hi}` : ''">
+                            </div>
+                        {% else %}
                         <div class="flex flex-wrap gap-2">
                             {% for value, label in [('', 'Any')] + opt.options %}
                                 <label class="cursor-pointer">
@@ -215,6 +234,7 @@
                                 </label>
                             {% endfor %}
                         </div>
+                        {% endif %}
                     </fieldset>
                 {% endfor %}
             </div>
