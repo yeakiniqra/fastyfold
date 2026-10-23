@@ -68,6 +68,9 @@ exclude = ["docs/", ".github/"]     # screenshots stay on GitHub; the PyPI page 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fastyfold"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"llms.txt" = "fastyfold/llms.txt"     # coding agents find the usage reference in site-packages
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

@@ -407,6 +407,14 @@ Images must be real PNG, JPEG, GIF or WebP files; SVG is refused because it can 
 - [ ] Set `owners=[...]` and give everyone else roles, or write `has_permission` rules.
 - [ ] With several workers, the sign-in limit is counted per process (`# ponytail:` in the code says how to share it).
 
+## Using an AI coding agent
+
+[`llms.txt`](https://github.com/yeakiniqra/fastyfold/blob/main/llms.txt) is a compact usage reference for coding agents (Claude Code, Cursor, Copilot…): every option and hook with its exact signature, plus the common mistakes. It's also installed with the package, next to `fastyfold/__init__.py`, so an agent working in your project can read it offline. To point your agent at it, add this line to your project's `CLAUDE.md`, `AGENTS.md` or `.cursorrules`:
+
+```
+The admin uses fastyfold. Before changing it, read fastyfold's llms.txt (in site-packages/fastyfold/, or https://raw.githubusercontent.com/yeakiniqra/fastyfold/main/llms.txt).
+```
+
 ## Development
 
 ```bash

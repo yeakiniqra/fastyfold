@@ -1,0 +1,142 @@
+# fastyfold
+
+> Admin panel for FastAPI over async SQLAlchemy 2.0 (or SQLModel) models. Server-rendered (Jinja2, htmx, Alpine), no Node. Built-in users, roles, audit log, CSV export, optional JSON API. Public API: `Admin`, `ModelAdmin`, `action`. Python 3.10+.
+
+This file is for coding agents writing code that *uses* fastyfold. It is also installed with the package: `python -c "import fastyfold, pathlib; print(pathlib.Path(fastyfold.__file__).parent / 'llms.txt')"`.
+
+## Install
+
+```bash
+pip install "fastyfold @ git+https://github.com/yeakiniqra/fastyfold@v0.3.0"
+pip install aiosqlite        # or asyncpg / aiomysql: the async driver for your database
+```
+
+## Minimal setup
+
+```python
+from fastapi import FastAPI
+from sqlalchemy.ext.asyncio import create_async_engine
+from fastyfold import Admin
+
+engine = create_async_engine("sqlite+aiosqlite:///app.db")   # must be async; a URL string also works: Admin("sqlite+aiosqlite:///app.db")
+app = FastAPI()
+
+admin = Admin(engine)
+admin.register(Order, Customer)      # plain models get sensible defaults
+admin.mount(app)                     # at /admin; admin.mount(app, "/backoffice") for another path
+```
+
+First visit to `/admin` redirects to `/admin/setup`. fastyfold prints a one-time code (`fastyfold setup code: XXXX-XXXX`) to stdout; entering it creates the owner account. No secret key, no login code needed. fastyfold creates its own `fastyfold_*` tables on the first request; never create them yourself.
+
+## Customizing a model
+
+```python
+from fastyfold import ModelAdmin, action
+
+@admin.register
+class OrderAdmin(ModelAdmin):
+    model = Order                                   # required
+    group, icon, key = "Shop", "receipt_long", "o"  # rail group, Material Symbols name, G+key shortcut
+    name, name_plural, slug = "Order", "Orders", "order"   # defaults come from the class name
+    list_display = ["id", "customer", "customer.email", "status", "total", "margin"]  # columns, relation, relation.column, or a method
+    column_labels = {"total": "Amount"}
+    search_fields = ["note", "customer.name"]
+    list_filter = ["status", "created_at", "customer_id", "total"]   # choice/bool/date, fk, number range
+    ordering = "-created_at"
+    per_page, per_page_options = 25, [25, 50, 100]
+    board_field = "status"                          # a choice/Enum column; enables the Board view
+    choices = {"status": ["new", "paid", "shipped"]}
+    colors = {"paid": "#10b981"}
+    form_fields = ["customer_id", "status", "total", "note"]
+    readonly_fields = ["total"]
+    exclude = ["secret"]                            # never shown on the form, never written
+    fieldsets = [("Shipping", ["address", "city"])]
+    inlines = ["items"]                             # or [("items", ["product_id", "qty"])]: one-to-many children
+    file_fields = {"photo": "image"}                # String columns holding uploads; needs Admin(media_dir=...) or storage=
+    preview_fields = ["status", "note"]
+    export_fields = ["id", "status", "total"]
+    schema = OrderIn                                # optional Pydantic model, validated after field parsing
+    save_as = True
+    select_all_limit = 1000
+
+    def margin(self, obj) -> str:                   # computed column: sync, (self, obj), returns display value
+        return f"{obj.total - obj.cost:.2f}"
+
+    @action("Mark shipped", icon="local_shipping", key="s", confirm="Ship them?")
+    async def mark_shipped(self, session, objs):    # objs: list of records; changes commit with the audit entry
+        for o in objs:
+            o.status = "shipped"
+```
+
+## Hooks (override on ModelAdmin)
+
+| Method | Sync/async | Purpose |
+|---|---|---|
+| `get_query(self, request) -> Select` | sync | Row scoping for every list, count, export, lookup, record and API call. Start from `super().get_query(request)`; user is `request.state.admin_user` |
+| `has_permission(self, user, perm) -> bool` | sync | `perm`: `view`, `add`, `change`, `delete`, `export`, or an action method name |
+| `has_object_permission(self, user, perm, obj) -> bool` | sync | Same, for one record |
+| `save(self, session, obj, is_new)` | async | Inside the transaction; default `session.add(obj)` |
+| `delete(self, session, obj)` | async | Inside the transaction; default `await session.delete(obj)` |
+| `after_save(self, obj, is_new)`, `after_delete(self, obj)` | sync or async | After commit |
+| `label(self, obj) -> str` | sync | How a record is named everywhere |
+
+## Admin options
+
+```python
+Admin(
+    engine,                    # AsyncEngine or async database URL
+    authenticate=None,         # None: built-in users. Or `async def (username, password) -> str | None` (must be async)
+    secret_key=None,           # None: generated and stored in the database
+    owners=None,               # with your own authenticate: usernames with full access; others need roles
+    permission=None,           # global sync (user, perm, model_admin) -> bool
+    title="Admin", accent="#ff6a2b", logo_icon="layers", groups={"Shop": "shopping_bag"}, site_url=None,
+    login_attempts=10, secure_cookies=None, cookie_path=None,
+    media_dir=None, storage=None, max_upload=10 * 1024 * 1024,
+    templates_dir=None,        # your templates first; extend "original/fastyfold/<name>.html"
+    api=False, api_auth=None,  # JSON CRUD at /admin/api/{model}; api_auth is a FastAPI dependency returning the user
+)
+```
+
+## Pages, widgets, your own routes
+
+```python
+from markupsafe import escape
+
+@admin.page("Reports", icon="bar_chart", group="Insights", key="r")
+async def reports(request, user):          # return HTML str (inserted unescaped into the layout), a Response,
+    return f"<p>Hi {escape(user)}</p>"     # or admin.render(request, "my/report.html", **ctx). POST forms need
+                                           # <input type="hidden" name="_csrf" value="{admin.csrf(request)}">
+
+@admin.widget("Revenue", icon="payments", span=4)   # span: 3, 4, 6, 8 or 12
+async def revenue(session, user):          # AsyncSession; return number/text, {"value", "caption"},
+    return {"value": 1200, "caption": "today"}      # [(label, n), ...] for bars, or None to hide
+
+from fastapi import Depends
+@app.get("/me")
+async def me(user: str = Depends(admin.current_user)):   # Admin(cookie_path="/") to share the session with app routes
+    return {"user": user}
+
+await admin.end_sessions("nusrat")         # sign a user out everywhere
+```
+
+## Rules and common mistakes
+
+- **Async only.** `create_engine` (sync) does not work; use `create_async_engine` with an async driver (`sqlite+aiosqlite`, `postgresql+asyncpg`, `mysql+aiomysql`).
+- **Single-column primary keys only.** Composite keys are not supported.
+- **Register models, pages and widgets before `admin.mount(app)`.**
+- **No lazy loading.** Async sessions can't lazy-load. Many-to-one relationships of the model itself are preloaded, but a related object's own relationships are not, so `label()` and computed columns should read plain columns (or relationships named in `list_display`).
+- **Slugs are unique.** Models and pages share one namespace (default: lower-cased class name). Reserved: `login`, `logout`, `static`, `api`, `setup`.
+- **Built-in users have roles on.** A new non-owner user sees nothing until an owner gives them a role (Roles screen). Owners see everything.
+- **Every check must pass:** `Admin(permission=)`, role grants, `has_permission`, `has_object_permission`, and `get_query` for visibility.
+- **Escape page HTML.** Strings returned from `@admin.page` are not escaped.
+- **Not SQLAlchemy?** SQLModel works as-is. For Tortoise, Piccolo, Peewee or raw SQL, write SQLAlchemy classes mirroring the existing tables just for the admin (don't `create_all`). MongoDB/Redis aren't supported.
+
+## Docs
+
+- [README](https://raw.githubusercontent.com/yeakiniqra/fastyfold/main/README.md): every feature and option, with examples
+- [Example app](https://raw.githubusercontent.com/yeakiniqra/fastyfold/main/examples/shop/app.py): runnable demo using most options
+- [Changelog](https://raw.githubusercontent.com/yeakiniqra/fastyfold/main/CHANGELOG.md): what changed per version
+
+## Optional
+
+- [AGENTS.md](https://raw.githubusercontent.com/yeakiniqra/fastyfold/main/AGENTS.md): internals (request flow, routes, templates), for changing fastyfold itself

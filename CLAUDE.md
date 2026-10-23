@@ -51,6 +51,7 @@ The built `fastyfold.css` is committed. `tailwindcss` is the standalone binary f
 - Server renders HTML. JavaScript stays small: Alpine for local UI state, htmx for partial swaps and boosted navigation. No SPA framework, no build step for users.
 - Async SQLAlchemy only (`AsyncEngine`). Single-column primary keys only.
 - Public API is what `fastyfold/__init__.py` exports. Keep it small: `Admin`, `ModelAdmin`, `action`.
+- `llms.txt` is the usage reference for agents writing apps with fastyfold (shipped in the wheel). Changing a public option, hook signature or default? Update it too.
 - Every POST checks the CSRF token and the permission hook. Don't add a write endpoint without both.
 - Every read of a model's rows starts from `ModelAdmin.get_query(request)`, and every single-record fetch goes through `Admin._get` (scope, then `has_object_permission`). Never query a registered model's table directly in a view.
 - Hooks may be sync or async: call them through `call_hook`. Writes that can hit a constraint catch `IntegrityError` and show `db_message(e)`.

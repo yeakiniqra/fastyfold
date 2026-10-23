@@ -1,4 +1,7 @@
-"""fastyfold: a modern admin panel for FastAPI."""
+"""fastyfold: a modern admin panel for FastAPI.
+
+Usage reference for coding agents: llms.txt next to this file.
+"""
 
 from importlib import metadata as _metadata
 
