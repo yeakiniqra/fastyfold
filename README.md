@@ -350,8 +350,8 @@ See [CLAUDE.md](CLAUDE.md) for conventions and [AGENTS.md](AGENTS.md) for how ev
 4. The **Publish** workflow then:
    - runs the tests
    - builds the package
-   - publishes it to PyPI
    - creates the GitHub Release, using that changelog section as the notes
+   - publishes to PyPI, once the repository variable `PUBLISH_TO_PYPI` is `true` and PyPI trusted publishing is set up
 
 ## License
 

@@ -1,8 +1,9 @@
 name: Publish
 
-# Push a tag like v0.2.1 (matching pyproject's version) to test, build, publish to PyPI and create the
-# GitHub Release, whose notes are that version's section of CHANGELOG.md. Run it by hand to publish
-# an existing tag again (for example after setting up PyPI trusted publishing).
+# Push a tag like v0.2.1 (matching pyproject's version) to test, build and create the GitHub Release, whose
+# notes are that version's section of CHANGELOG.md. PyPI publishing runs too once the repository variable
+# PUBLISH_TO_PYPI is "true" and PyPI trusted publishing is set up. Run it by hand to (re)publish an existing tag.
+# Each job builds for itself instead of passing artifacts, so no artifact storage is needed.
 on:
   push:
     tags: ["v*"]
@@ -31,9 +32,11 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: pytest --ignore=tests/test_browser.py
 
-  build:
+  github-release:
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,15 +61,20 @@ jobs:
           open("release-notes.md", "w", encoding="utf-8").write(m.group(1).strip() + "\n")
           PY
       - run: pip install build twine && python -m build && twine check dist/*
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release
-          path: |
-            dist/
-            release-notes.md
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --title "fastyfold $VERSION" --notes-file release-notes.md
+            gh release upload "$TAG" dist/* -R "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" dist/* -R "$GITHUB_REPOSITORY" --title "fastyfold $VERSION" --notes-file release-notes.md --verify-tag
+          fi
 
   pypi:
-    needs: build
+    needs: test
+    if: vars.PUBLISH_TO_PYPI == 'true'
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -74,27 +82,11 @@ jobs:
     permissions:
       id-token: write          # PyPI trusted publishing: no API token stored in the repo
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
         with:
-          name: release
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install build twine && python -m build && twine check dist/*
       - uses: pypa/gh-action-pypi-publish@release/v1
-
-  github-release:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: release
-      - name: Create or update the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --title "fastyfold ${TAG#v}" --notes-file release-notes.md
-            gh release upload "$TAG" dist/* -R "$GITHUB_REPOSITORY" --clobber
-          else
-            gh release create "$TAG" dist/* -R "$GITHUB_REPOSITORY" --title "fastyfold ${TAG#v}" --notes-file release-notes.md --verify-tag
-          fi
