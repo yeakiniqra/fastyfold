@@ -25,7 +25,13 @@
                 <span class="pointer-events-none absolute left-14 z-50 rounded-lg bg-stone-800 px-2.5 py-1 text-xs font-semibold whitespace-nowrap text-white opacity-0 transition group-hover:opacity-100">{{ g.name }}</span>
             </a>
         {% endfor %}
-        {% if user in admin.owners %}
+        {% if admin.is_owner(user) and admin.builtin_users %}
+        <a href="{{ admin.url('_users') }}" class="group relative flex size-11 items-center justify-center rounded-2xl transition {{ 'bg-white/10 text-white' if '/_users' in request.url.path else 'text-stone-500 hover:bg-white/5 hover:text-stone-200' }}" data-users-link>
+            {{ ui.icon('group') }}
+            <span class="pointer-events-none absolute left-14 z-50 rounded-lg bg-stone-800 px-2.5 py-1 text-xs font-semibold whitespace-nowrap text-white opacity-0 transition group-hover:opacity-100">Users</span>
+        </a>
+        {% endif %}
+        {% if admin.is_owner(user) and admin.roles_enabled %}
         <a href="{{ admin.url('_roles') }}" class="group relative flex size-11 items-center justify-center rounded-2xl transition {{ 'bg-white/10 text-white' if '/_roles' in request.url.path else 'text-stone-500 hover:bg-white/5 hover:text-stone-200' }}" data-roles-link>
             {{ ui.icon('shield_person') }}
             <span class="pointer-events-none absolute left-14 z-50 rounded-lg bg-stone-800 px-2.5 py-1 text-xs font-semibold whitespace-nowrap text-white opacity-0 transition group-hover:opacity-100">Roles</span>
@@ -37,6 +43,7 @@
         </a>
         <div class="mt-auto flex flex-col items-center gap-3">
             <button type="button" class="flex size-11 items-center justify-center rounded-2xl text-stone-500 hover:bg-white/5 hover:text-stone-200" @click="keys = true" title="Keyboard shortcuts (?)">{{ ui.icon('keyboard') }}</button>
+            {% if admin.builtin_users %}<a href="{{ admin.url('_account') }}" class="flex size-11 items-center justify-center rounded-2xl text-stone-500 hover:bg-white/5 hover:text-stone-200" title="My account" data-account-link>{{ ui.icon('manage_accounts') }}</a>{% endif %}
             <form method="post" action="{{ admin.url('logout') }}">
                 {{ ui.csrf_input() }}
                 <button class="flex size-10 items-center justify-center rounded-full bg-stone-700 text-xs font-bold text-white ring-2 ring-accent ring-offset-2 ring-offset-rail" title="Sign out {{ user }}">{{ ui.initials(user) }}</button>

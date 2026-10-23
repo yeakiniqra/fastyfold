@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, selectinload
 
-from . import audit
+from . import audit, users
 
 if TYPE_CHECKING:
     from .admin import Admin
@@ -95,11 +95,11 @@ def parse_members(raw: str) -> list[str]:
 
 
 def build(admin: "Admin") -> APIRouter:
-    router = APIRouter(prefix="/_roles", route_class=admin.router.route_class)
+    router = APIRouter(prefix="/_roles", route_class=admin.router.route_class, dependencies=[Depends(admin._boot)])
 
     async def owner(request: Request) -> str:
         user = await admin._user(request)
-        if user not in admin.owners:
+        if not admin.is_owner(user):
             raise HTTPException(403, "Only owners can manage roles.")
         return user
 
@@ -110,6 +110,9 @@ def build(admin: "Admin") -> APIRouter:
         """Suggestions for the members box: everyone who has signed in or appears in the log."""
         names = set(await s.scalars(select(audit.AdminSession.user).distinct()))
         names |= set(await s.scalars(select(audit.LogEntry.user).distinct().limit(500)))
+        if admin.builtin_users:
+            names |= set(await s.scalars(select(users.User.username).where(users.User.is_owner.is_(False))))
+            names -= set(await s.scalars(select(users.User.username).where(users.User.is_owner.is_(True))))
         return sorted(names - set(admin.owners))
 
     async def load(s, role_id: int) -> Role:

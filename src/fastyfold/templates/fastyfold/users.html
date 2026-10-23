@@ -1,0 +1,31 @@
+{% extends "fastyfold/layout.html" %}
+{% import "fastyfold/_macros.html" as ui with context %}
+{% block title %}Users · {{ admin.title }}{% endblock %}
+
+{% block content %}
+<div class="mt-6 pb-16">
+    <div class="flex flex-wrap items-center gap-3">
+        <h1 class="text-2xl font-extrabold">Users</h1>
+        <span class="rounded-full bg-panel px-2.5 py-1 text-xs font-bold text-muted shadow-xs">{{ users | length }}</span>
+        <span class="text-muted">Owners can do everything. Everyone else gets what their <a class="font-semibold text-accent-ink" href="{{ admin.url('_roles') }}">roles</a> allow.</span>
+        <a href="{{ admin.url('_users', 'new') }}" class="pill-accent ml-auto pr-2" data-new>{{ ui.icon('person_add', '!text-[18px]') }}New user<span class="kbd ml-1 bg-white/20 text-white shadow-none">N</span></a>
+    </div>
+    <section class="float mt-5 overflow-hidden">
+        <table class="w-full">
+            <thead><tr class="text-left text-xs font-bold text-faint"><th class="py-4 pl-6">User</th><th class="px-3 py-4">Access</th><th class="px-3 py-4">Last sign-in</th></tr></thead>
+            <tbody>
+                {% for u in users %}
+                    <tr data-row data-url="{{ admin.url('_users', u.id) }}" class="cursor-pointer border-t border-line transition hover:bg-soft/70 data-[active]:bg-soft" @click="location = $el.dataset.url">
+                        <td class="py-3 pl-6"><div class="flex items-center gap-3">{{ ui.avatar(u.username, 'size-9', 'rounded-xl') }}<a href="{{ admin.url('_users', u.id) }}" class="font-semibold">{{ u.username }}</a>{% if u.username == user %}<span class="text-xs text-faint">you</span>{% endif %}</div></td>
+                        <td class="px-3 py-3">
+                            {% if u.is_owner %}<span class="inline-flex items-center gap-1.5 rounded-full bg-accent-soft px-2.5 py-1 text-xs font-bold text-accent-ink">{{ ui.icon('verified_user', '!text-[14px]') }}Owner</span>
+                            {% else %}<span class="text-muted">{{ role_names.get(u.username, []) | join(', ') or 'No roles yet: sees nothing' }}</span>{% endif %}
+                        </td>
+                        <td class="px-3 py-3 text-muted">{{ u.last_login_at.strftime('%b %d, %H:%M') if u.last_login_at else 'Never' }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
+</div>
+{% endblock %}

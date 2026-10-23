@@ -10,7 +10,7 @@ A modern admin panel for FastAPI. Point it at your SQLAlchemy models and you get
 
 It installs with `pip`, and there is no Node build on your side.
 
-> **Status:** 0.2, beta. Tested on Python 3.10–3.13 with SQLite and PostgreSQL 16. The API may still change before 1.0; see the [changelog](CHANGELOG.md).
+> **Status:** 0.3, beta. Tested on Python 3.10–3.13 with SQLite and PostgreSQL 16. The API may still change before 1.0; see the [changelog](CHANGELOG.md).
 
 ![Dashboard](docs/screenshots/dashboard-light.png)
 
@@ -40,6 +40,7 @@ It installs with `pip`, and there is no Node build on your side.
 - **"Save as new", "Save & add another" and "Save & keep editing".**
 
 **People and permissions**
+- **Users built in:** no login code to write. The first visit creates the owner account (protected by a one-time code in your terminal), and owners add teammates, reset passwords and assign roles on a Users screen. Everyone can change their own password.
 - **Ready-made roles editor:** a permission matrix of models and pages × view, add, change, delete, export and each action.
 - **Per-user and per-tenant data:** override one method, `get_query(request)`, to scope every list, count, export, lookup, record and API call.
 - **Per-record rules:** `has_object_permission(user, perm, obj)`, e.g. closed orders are read-only.
@@ -71,52 +72,64 @@ It installs with `pip`, and there is no Node build on your side.
 ## Install
 
 ```bash
-pip install fastyfold
-pip install aiosqlite        # or asyncpg, aiomysql…: any async SQLAlchemy driver
+pip install "fastyfold @ git+https://github.com/yeakiniqra/fastyfold@v0.3.0"
 ```
 
 ## Quick start
 
+Add three lines where you create your FastAPI app:
+
 ```python
-from fastapi import FastAPI
-from sqlalchemy.ext.asyncio import create_async_engine
-from fastyfold import Admin, ModelAdmin, action
+from fastyfold import Admin
 
-from .models import Order, Status   # your SQLAlchemy models
+from .db import engine                      # your SQLAlchemy AsyncEngine
+from .models import Customer, Order         # your models
 
-engine = create_async_engine("sqlite+aiosqlite:///shop.db")
-app = FastAPI()
+admin = Admin(engine)
+admin.register(Order, Customer)
+admin.mount(app)                            # app = your FastAPI(); the admin lives at /admin
+```
 
+Start your app and open http://127.0.0.1:8000/admin. The first visit asks for a **setup code** that fastyfold prints in your terminal, then you create your account. That's it: you are the owner, and you can add teammates on the **Users** screen.
 
-async def authenticate(username: str, password: str) -> str | None:
-    """Return a display name if the credentials are valid, else None."""
-    return username if (username, password) == ("admin", "secret") else None
+There's no secret key or login code to write. fastyfold stores its own signing key and users in your database (tables starting with `fastyfold_`).
 
+## Customize a model
 
-admin = Admin(engine, secret_key="change-me", authenticate=authenticate, title="Acme Store")
+Register a `ModelAdmin` subclass instead of the bare model when you want options:
+
+```python
+from fastyfold import ModelAdmin, action
 
 
 @admin.register
 class OrderAdmin(ModelAdmin):
     model = Order
-    group = "Shop"
-    icon = "receipt_long"            # any Material Symbols name
-    key = "o"                         # press G then O to jump here
     list_display = ["id", "customer", "status", "total", "created_at"]
     search_fields = ["customer.name", "note"]
     list_filter = ["status", "created_at", "customer_id", "total"]
-    board_field = "status"           # enables the Board view
+    board_field = "status"                  # adds the Board view
+    key = "o"                               # press G then O to jump here
 
     @action("Mark shipped", icon="local_shipping", key="s")
     async def mark_shipped(self, session, orders):
         for order in orders:
-            order.status = Status.shipped
-
-
-admin.mount(app, "/admin")
+            order.status = "shipped"
 ```
 
-Run it with `uvicorn main:app` and open `/admin`. Register your models before calling `mount()`.
+Every option is listed under [ModelAdmin options](#modeladmin-options).
+
+## Use your own login
+
+Built-in users are the default. To sign in against your own user table instead, pass `authenticate` (and, if you like, your own `secret_key`):
+
+```python
+async def authenticate(username: str, password: str) -> str | None:
+    user = await get_user(username)                       # your code
+    return user.name if user and user.check_password(password) else None
+
+admin = Admin(engine, authenticate=authenticate, owners=["nusrat"])   # owners: full access; others get roles
+```
 
 ## Try the demo
 
@@ -167,16 +180,16 @@ Methods you can override:
 
 ```python
 Admin(
-    engine,                       # AsyncEngine
-    secret_key="…",               # signs the session cookie and CSRF tokens
-    authenticate=fn,              # async (username, password) -> display name | None
+    engine,                       # AsyncEngine, or a database URL like "sqlite+aiosqlite:///app.db"
     title="Acme Store",
+    authenticate=None,            # None: built-in users with a setup page; or async (username, password) -> name | None
+    secret_key=None,              # None: generated once and stored in the database
     accent="#ff6a2b",             # one colour themes everything
     logo_icon="layers",
     groups={"Shop": "shopping_bag"},  # rail icon per group
     site_url="/",                 # "View site" link
     permission=fn,                # optional global (user, perm, model_admin) -> bool
-    owners=["nusrat"],            # turns on roles: owners can do everything and manage roles
+    owners=["nusrat"],            # with your own authenticate: these users can do everything; everyone else gets roles
     login_attempts=10,            # failed sign-ins per IP per 15 minutes; 0 turns the limit off
     secure_cookies=None,          # None follows the request scheme; True behind a TLS-terminating proxy
     cookie_path=None,             # defaults to the mount path; "/" lets admin.current_user work on your other routes
@@ -212,8 +225,10 @@ A `TypeDecorator` behaves like the type it wraps.
 
 ## Roles
 
+With built-in users, roles are always on, and owners are the users marked **Owner** on the Users screen. With your own `authenticate`, list the owners instead:
+
 ```python
-admin = Admin(engine, ..., owners=["nusrat"])
+admin = Admin(engine, authenticate=authenticate, owners=["nusrat"])
 ```
 
 Owners see a **Roles** entry in the rail and ⌘K. A role has a name, its people (one username per line) and a permission matrix:
@@ -323,7 +338,7 @@ Images must be real PNG, JPEG, GIF or WebP files; SVG is refused because it can 
 
 ## Going to production
 
-- [ ] Use a long random `secret_key`, kept out of source control.
+- [ ] Keep the database private: it holds fastyfold's signing key and the users' password hashes (or pass your own `secret_key`).
 - [ ] Serve over HTTPS, and set `secure_cookies=True` if TLS ends at a proxy.
 - [ ] Run uvicorn with `--proxy-headers` behind a proxy, so the sign-in limit sees real addresses.
 - [ ] Cap request bodies at the proxy, too; the upload size check runs after Starlette has received the file.
@@ -346,7 +361,7 @@ See [CLAUDE.md](CLAUDE.md) for conventions and [AGENTS.md](AGENTS.md) for how ev
 
 1. Bump `version` in `pyproject.toml`.
 2. Add a `## <version>` section to [CHANGELOG.md](CHANGELOG.md).
-3. Push a matching tag, e.g. `git tag -a v0.2.1 -m "fastyfold 0.2.1" && git push origin v0.2.1`.
+3. Push a matching tag, e.g. `git tag -a v0.3.1 -m "fastyfold 0.3.1" && git push origin v0.3.1`.
 4. The **Publish** workflow then:
    - runs the tests
    - builds the package

@@ -29,6 +29,14 @@ class LogEntry(_Base):
         return json.loads(self.changes or "{}")
 
 
+class Setting(_Base):
+    """fastyfold's own key/value store: the generated secret key, the one-time setup code."""
+    __tablename__ = "fastyfold_setting"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+
+
 class AdminSession(_Base):
     """One row per signed-in browser. Signing out deletes it, so a copied cookie stops working at once."""
     __tablename__ = "fastyfold_session"

@@ -1,0 +1,27 @@
+{% extends "fastyfold/base.html" %}
+{% import "fastyfold/_macros.html" as ui with context %}
+{% block title %}Set up · {{ admin.title }}{% endblock %}
+
+{% macro error(name) %}{% if errors.get(name) %}<p class="mt-2 text-xs font-semibold text-rose-600 dark:text-rose-400">{{ errors[name] }}</p>{% endif %}{% endmacro %}
+
+{% block body %}
+<div class="flex min-h-screen items-center justify-center p-6">
+    <form method="post" action="{{ admin.url('setup') }}" class="float w-full max-w-md p-8" novalidate>
+        <div class="flex size-12 items-center justify-center rounded-2xl bg-accent text-white">{{ ui.icon(admin.logo_icon, '!text-[26px]', fill=True) }}</div>
+        <h1 class="mt-6 text-2xl font-extrabold">Welcome to {{ admin.title }}</h1>
+        <p class="mt-2 text-muted">Create the first admin account. It becomes the owner and can add everyone else later.</p>
+        <div class="mt-7 space-y-5">
+            <div><label class="field-label" for="code">Setup code</label>
+                <input id="code" name="code" value="{{ values.get('code', '') }}" class="field font-mono tracking-widest uppercase" placeholder="XXXX-XXXX" autocomplete="off" autofocus required>
+                <p class="hint">Printed in the terminal where your app is running. It keeps strangers from claiming a new admin.</p>{{ error('code') }}</div>
+            <div><label class="field-label" for="username">Username</label>
+                <input id="username" name="username" value="{{ values.get('username', '') }}" class="field" autocomplete="username" required>{{ error('username') }}</div>
+            <div><label class="field-label" for="password">Password</label>
+                <input id="password" name="password" type="password" class="field" autocomplete="new-password" required>{{ error('password') }}</div>
+            <div><label class="field-label" for="confirm">Password again</label>
+                <input id="confirm" name="confirm" type="password" class="field" autocomplete="new-password" required></div>
+            <button class="pill-accent h-12 w-full justify-center text-base">Create account {{ ui.icon('arrow_forward') }}</button>
+        </div>
+    </form>
+</div>
+{% endblock %}

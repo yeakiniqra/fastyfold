@@ -67,7 +67,7 @@ def read_dict(ma: ModelAdmin, obj, key_of) -> dict:
 
 
 def build(admin: "Admin") -> APIRouter:
-    router = APIRouter(prefix="/api", route_class=admin.router.route_class)
+    router = APIRouter(prefix="/api", route_class=admin.router.route_class, dependencies=[Depends(admin._boot)])
 
     async def session_user(request: Request) -> str:
         try:

@@ -28,6 +28,7 @@ The built `fastyfold.css` is committed. `tailwindcss` is the standalone binary f
 | Path | Role |
 |---|---|
 | `src/fastyfold/admin.py` | `Admin`: registry, router (AdminRoute: error pages + security headers), sessions, every HTML view |
+| `src/fastyfold/users.py` | Built-in users (when no `authenticate=`): first-run setup page, Users screen, change password |
 | `src/fastyfold/roles.py` | Opt-in roles (`Admin(owners=...)`): role tables, per-request grants, the roles editor routes |
 | `src/fastyfold/api.py` | Opt-in JSON API: generated Pydantic schemas and typed CRUD routes over the same ModelAdmin |
 | `src/fastyfold/model.py` | `ModelAdmin`: per-model options users subclass |

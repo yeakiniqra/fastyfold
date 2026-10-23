@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fastyfold"
-version = "0.2.1"
+version = "0.3.0"
 description = "A modern admin panel for FastAPI: table, board and split views, ⌘K search, roles, an audit log and a typed JSON API"
 dynamic = ["readme"]
 license = "Apache-2.0"

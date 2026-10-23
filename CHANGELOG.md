@@ -2,6 +2,25 @@
 
 All notable changes to fastyfold. The newest release is at the top.
 
+## 0.3.0
+
+Setting up is now three lines: `Admin(engine)`, `admin.register(Order, Customer)`, `admin.mount(app)`.
+
+### Added
+- **Built-in users.** Leave out `authenticate=`, and the first visit to `/admin` opens a setup page:
+  - Enter the one-time code that fastyfold prints in your terminal, then create the owner account.
+  - Owners manage everyone else on a **Users** screen: add people, reset passwords, mark owners, assign roles.
+  - Everyone can change their own password.
+  - Users live in `fastyfold_user`, with PBKDF2 password hashes.
+- **No secret key needed.** Without `secret_key=`, one is generated on first use and kept in `fastyfold_setting`, so sign-ins survive restarts and every worker shares it.
+- **`admin.register()` takes plain models**, and several at once: `admin.register(Order, Customer, Product)`. It still accepts ModelAdmin subclasses and works as a decorator.
+- **`Admin("sqlite+aiosqlite:///app.db")`** accepts a database URL instead of an engine.
+- **Roles are always on with built-in users.** Owners are the users marked Owner; changes to users show in the audit log for owners.
+
+### Changed
+- `secret_key` and `authenticate` are optional. Passing them works exactly as before.
+- `"setup"` is a reserved slug.
+
 ## 0.2.1
 
 Fixes found by running fastyfold on a live project (a read-only backoffice over a support bot's data).

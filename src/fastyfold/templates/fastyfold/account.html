@@ -1,0 +1,25 @@
+{% extends "fastyfold/layout.html" %}
+{% import "fastyfold/_macros.html" as ui with context %}
+{% block title %}My account · {{ admin.title }}{% endblock %}
+{% macro error(name) %}{% if errors.get(name) %}<p class="mt-2 text-xs font-semibold text-rose-600 dark:text-rose-400">{{ errors[name] }}</p>{% endif %}{% endmacro %}
+
+{% block content %}
+<form method="post" class="mt-6 max-w-xl" novalidate>
+    {{ ui.csrf_input() }}
+    <div class="flex items-center gap-4">{{ ui.avatar(user, 'size-14', 'rounded-2xl') }}
+        <div><h1 class="text-2xl font-extrabold">{{ user }}</h1><p class="mt-1 text-muted">{{ 'Owner' if admin.is_owner(user) else 'Member' }}</p></div></div>
+    <section class="float mt-6 p-7">
+        <h2 class="font-bold">Change password</h2>
+        <div class="mt-6 space-y-5">
+            <div><label class="field-label" for="current">Current password</label>
+                <input id="current" name="current" type="password" class="field" autocomplete="current-password">{{ error('current') }}</div>
+            <div><label class="field-label" for="password">New password</label>
+                <input id="password" name="password" type="password" class="field" autocomplete="new-password" placeholder="At least {{ min_password }} characters">{{ error('password') }}</div>
+            <div><label class="field-label" for="confirm">New password again</label>
+                <input id="confirm" name="confirm" type="password" class="field" autocomplete="new-password"></div>
+            <p class="hint">Changing it signs you out of every other browser.</p>
+            <button class="pill-accent" data-save>{{ ui.icon('check', '!text-[18px]') }}Change password</button>
+        </div>
+    </section>
+</form>
+{% endblock %}

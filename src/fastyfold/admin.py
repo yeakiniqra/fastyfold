@@ -1,5 +1,6 @@
 """Admin: model registry, auth, and every HTTP view."""
 
+import asyncio
 import csv
 import io
 import mimetypes
@@ -26,11 +27,11 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from starlette.datastructures import QueryParams
 
-from . import audit, roles
-from .audit import AdminSession
+from . import audit, roles, users
+from .audit import AdminSession, Setting
 from .fields import Field, FieldError, fields_for
 from .model import DAYS, Inline, ModelAdmin, call_hook, db_message
 from .security import SESSION_COOKIE, SESSION_MAX_AGE, SESSION_SHORT_AGE, Signer, new_session_id
@@ -46,7 +47,7 @@ SECURITY_HEADERS = {
     "Referrer-Policy": "same-origin",
     "Cache-Control": "no-store",
 }
-RESERVED = ("login", "logout", "static", "api")
+RESERVED = ("login", "logout", "static", "api", "setup")
 # Literal class names so Tailwind's scanner finds them.
 SPANS = {3: "xl:col-span-3", 4: "xl:col-span-4", 6: "xl:col-span-6", 8: "xl:col-span-8", 12: "xl:col-span-12"}
 
@@ -87,10 +88,10 @@ class Widget:
 class Admin:
     def __init__(
         self,
-        engine: AsyncEngine,
+        engine: AsyncEngine | str,
         *,
-        secret_key: str,
-        authenticate: Authenticate,
+        secret_key: str | None = None,
+        authenticate: Authenticate | None = None,
         title: str = "Admin",
         accent: str = "#ff6a2b",
         logo_icon: str = "layers",
@@ -108,10 +109,13 @@ class Admin:
         cookie_path: str | None = None,
         owners: list[str] | None = None,
     ):
-        self.engine = engine
-        self.sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
-        self.signer = Signer(secret_key)
-        self.authenticate = authenticate
+        self.engine = create_async_engine(engine) if isinstance(engine, str) else engine
+        self.sessionmaker = async_sessionmaker(self.engine, expire_on_commit=False)
+        # No secret_key: one is generated on first use and kept in fastyfold_setting, so it survives restarts
+        # and every worker shares it. No authenticate: built-in users with a first-run setup page (users.py).
+        self._signer = Signer(secret_key) if secret_key else None
+        self.builtin_users = authenticate is None
+        self.authenticate = authenticate or (lambda username, password: users.authenticate(self, username, password))
         self.title = title
         self.accent = accent
         self.logo_icon = logo_icon
@@ -125,7 +129,10 @@ class Admin:
         self.api_auth = api_auth                 # a FastAPI dependency returning the user (bearer token, API key…)
         self.secure_cookies = secure_cookies
         self._cookie_path = cookie_path
-        self.owners = frozenset(owners or ())    # set → roles are on: owners can do anything, everyone else what their roles grant          # default: the mount path. "/" lets admin.current_user work on your other routes.     # None: follow the request scheme. Set True behind a TLS-terminating proxy.
+        # Owners can do anything; everyone else gets what their roles grant. Roles are on with owners=[...] or built-in users,
+        # whose owners are the users marked as owner.
+        self.owners = frozenset(owners or ())
+        self.roles_enabled = bool(self.owners) or self.builtin_users
         self.models: dict[str, ModelAdmin] = {}
         self.pages: dict[str, Page] = {}
         self.widgets: list[Widget] = []
@@ -134,7 +141,9 @@ class Admin:
         self._key_fields: dict[type, Field] = {}
         # ponytail: failed sign-ins live in this process; with several workers each counts its own. Use Redis to share them.
         self._failures: dict[str, list[float]] = {}
-        self._log_ready = False
+        self._booted = False
+        self._boot_lock = asyncio.Lock()
+        self._has_users = False
         # Your templates_dir wins; "original/fastyfold/..." always reaches the built-in one, so an override can extend it.
         package = FileSystemLoader(HERE / "templates")
         mine = [FileSystemLoader(d) for d in ([templates_dir] if isinstance(templates_dir, (str, Path)) else templates_dir or [])]
@@ -142,19 +151,22 @@ class Admin:
         self.templates = Jinja2Templates(env=env)
         self.templates.env.globals["admin"] = self
         self.templates.env.globals["tone"] = lambda text: sum(map(ord, str(text or ""))) % 5
-        self.router = APIRouter(route_class=self._route_class())
+        self.router = APIRouter(route_class=self._route_class(), dependencies=[Depends(self._boot)])
         self._routes()
 
     # ── setup ─────────────────────────────────────────────────────────────
-    def register(self, cls: type[ModelAdmin]) -> type[ModelAdmin]:
-        """Register a ModelAdmin subclass. Usable as a decorator."""
-        ma = cls(self)
-        self._claim(ma.slug)
-        if self.storage is None and any(f.kind in ("image", "file") for f in ma.fields.values()):
-            raise ValueError(f"fastyfold: {cls.__name__} has file fields; pass Admin(media_dir=...) or Admin(storage=...)")
-        self.models[ma.slug] = ma
-        self._by_model[ma.model] = ma
-        return cls
+    def register(self, *items):
+        """Register models: `admin.register(Order, Customer)` with defaults, or a ModelAdmin subclass for options.
+        Also works as a class decorator. Returns what it was given (the first item for several)."""
+        for item in items:
+            cls = item if isinstance(item, type) and issubclass(item, ModelAdmin) else type(f"{item.__name__}Admin", (ModelAdmin,), {"model": item})
+            ma = cls(self)
+            self._claim(ma.slug)
+            if self.storage is None and any(f.kind in ("image", "file") for f in ma.fields.values()):
+                raise ValueError(f"fastyfold: {cls.__name__} has file fields; pass Admin(media_dir=...) or Admin(storage=...)")
+            self.models[ma.slug] = ma
+            self._by_model[ma.model] = ma
+        return items[0] if items else None
 
     def page(self, name: str, *, icon: str = "dashboard", group: str = "Pages", key: str | None = None, slug: str | None = None):
         """Add a custom screen: `async def fn(request, user)` returning HTML (str) or any Response.
@@ -188,8 +200,10 @@ class Admin:
         self.prefix = path.rstrip("/")
         # Static first, so /admin/static/... never reaches the /{model}/{pk} route.
         app.mount(f"{self.prefix}/static", StaticFiles(directory=HERE / "static"), name="fastyfold-static")
-        # Both before the admin router, whose /{model} and /{model}/{pk} would match them.
-        if self.owners:
+        # All before the admin router, whose /{model} and /{model}/{pk} would match them.
+        if self.builtin_users:
+            app.include_router(users.build(self), prefix=self.prefix)
+        if self.roles_enabled:
             app.include_router(roles.build(self), prefix=self.prefix)
         if self.api:
             from . import api
@@ -198,13 +212,59 @@ class Admin:
 
     @asynccontextmanager
     async def session(self):
-        if not self._log_ready:
-            await audit.ensure_table(self.engine)
-            if self.owners:
-                await roles.ensure_tables(self.engine)
-            self._log_ready = True
+        await self._boot()
         async with self.sessionmaker() as s:
             yield s
+
+    async def _boot(self) -> None:
+        """Once per process, on the first request: create fastyfold's tables and load (or create) the secret key."""
+        if self._booted:
+            return
+        async with self._boot_lock:
+            if self._booted:
+                return
+            await audit.ensure_table(self.engine)
+            if self.roles_enabled:
+                await roles.ensure_tables(self.engine)
+            if self.builtin_users:
+                await users.ensure_tables(self.engine)
+            if self._signer is None:
+                await self._set_setting("secret_key", secrets.token_urlsafe(48), only_if_missing=True)
+                self._signer = Signer(await self._setting("secret_key"))
+            self._booted = True
+
+    @property
+    def signer(self) -> Signer:
+        if self._signer is None:
+            raise RuntimeError("fastyfold: the secret key loads on the first request (or pass Admin(secret_key=...))")
+        return self._signer
+
+    async def _setting(self, key: str) -> str | None:
+        async with self.sessionmaker() as s:
+            return await s.scalar(select(Setting.value).where(Setting.key == key))
+
+    async def _set_setting(self, key: str, value: str, *, only_if_missing: bool = False) -> None:
+        async with self.sessionmaker() as s:
+            row = await s.get(Setting, key)
+            if row is not None and only_if_missing:
+                return
+            if row is None:
+                s.add(Setting(key=key, value=value))
+            else:
+                row.value = value
+            try:
+                await s.commit()
+            except IntegrityError:          # another worker wrote it first; theirs stands
+                await s.rollback()
+
+    async def _delete_setting(self, key: str) -> None:
+        async with self.sessionmaker() as s:
+            await s.execute(sa_delete(Setting).where(Setting.key == key))
+            await s.commit()
+
+    def is_owner(self, user: str | None) -> bool:
+        """Owners can do everything and manage users and roles: the owners=[...] list, or built-in users marked owner."""
+        return user is not None and (user in self.owners or (self.builtin_users and users.current_owner.get() == user))
 
     def url(self, *parts, **query) -> str:
         parts = [str(p) for p in parts if p != ""]
@@ -217,6 +277,18 @@ class Admin:
             return ""
         url = getattr(self.storage, "url", None)
         return url(key) if url else self.url("_media", key)
+
+    async def _start_session(self, request: Request, user: str, *, remember: bool, next_url: str) -> RedirectResponse:
+        """Sign `user` in: a fastyfold_session row plus the signed cookie that names it."""
+        sid, now = new_session_id(), datetime.now(timezone.utc)
+        async with self.session() as s:
+            await s.execute(sa_delete(AdminSession).where(AdminSession.expires_at <= now))   # sweep stale rows
+            s.add(AdminSession(id=sid, user=user, expires_at=now + timedelta(seconds=SESSION_MAX_AGE if remember else SESSION_SHORT_AGE)))
+            await s.commit()
+        resp = RedirectResponse(self._local(next_url, self.url("")), 303)
+        resp.set_cookie(SESSION_COOKIE, self.signer.dump(user, sid), max_age=SESSION_MAX_AGE if remember else None,
+                        httponly=True, samesite="lax", secure=self._secure_cookie(request), path=self.cookie_path)
+        return resp
 
     async def current_user(self, request: Request) -> str:
         """FastAPI dependency for your own routes: `user: str = Depends(admin.current_user)`.
@@ -255,7 +327,7 @@ class Admin:
         """The global hook, then the model's has_permission, then (for one record) has_object_permission."""
         if self.permission and not self.permission(user, perm, ma):
             return False
-        if self.owners and user not in self.owners and (ma.slug, perm) not in (roles.current_grants.get() or ()):
+        if self.roles_enabled and not self.is_owner(user) and (ma.slug, perm) not in (roles.current_grants.get() or ()):
             return False
         if not ma.has_permission(user, perm):
             return False
@@ -282,7 +354,7 @@ class Admin:
 
     def _log_models(self, user: str) -> list[str]:
         """Audit entries this user may read: their models', plus role changes for owners."""
-        return [ma.slug for ma in self._visible(user)] + ([roles.AUDIT_MODEL] if user in self.owners else [])
+        return [ma.slug for ma in self._visible(user)] + ([roles.AUDIT_MODEL, users.AUDIT_MODEL] if self.is_owner(user) else [])
 
     # ── request helpers ───────────────────────────────────────────────────
     def _route_class(self) -> type[APIRoute]:
@@ -324,6 +396,7 @@ class Admin:
 
     async def _user(self, request: Request) -> str:
         """The signed-in user, from a signed cookie that names a live row in fastyfold_session."""
+        await self._boot()
         data = self.signer.load(request.cookies.get(SESSION_COOKIE))
         user = None
         if data:
@@ -341,11 +414,15 @@ class Admin:
     async def _signed_in(self, request: Request, user: str) -> None:
         """Remember who is asking, and (with roles on) what their roles grant, for the rest of this request."""
         request.state.admin_user = user
-        if self.owners and user not in self.owners:
+        if self.builtin_users:
+            async with self.session() as s:
+                users.current_owner.set(user if await users.is_owner(s, user) else None)
+        if self.roles_enabled and not self.is_owner(user):
             async with self.session() as s:
                 roles.current_grants.set(await roles.grants_for(s, user))
 
     async def _csrf(self, request: Request) -> None:
+        await self._boot()
         token = request.headers.get("X-CSRF-Token") or (await request.form()).get("_csrf")
         if not self.signer.csrf_ok(request.cookies.get(SESSION_COOKIE), token):
             raise HTTPException(403, "Invalid or missing CSRF token. Reload the page and try again.")
@@ -414,6 +491,8 @@ class Admin:
 
         @r.get("/login", response_class=HTMLResponse, include_in_schema=False)
         async def login_page(request: Request, next: str = ""):
+            if self.builtin_users and await users.needs_setup(self):
+                return RedirectResponse(self.url("setup"), 303)
             return self._render(request, "login.html", next=next, user=None)
 
         @r.post("/login", include_in_schema=False)
@@ -431,16 +510,7 @@ class Admin:
                 self._failures.setdefault(ip, []).append(time.monotonic())
                 return self._render(request, "login.html", 401, next=next_url, user=None, error="That username and password didn't match.", username=username)
             self._failures.pop(ip, None)
-            remember = bool(form.get("remember"))
-            sid, now = new_session_id(), datetime.now(timezone.utc)
-            async with self.session() as s:
-                await s.execute(sa_delete(AdminSession).where(AdminSession.expires_at <= now))   # sweep stale rows
-                s.add(AdminSession(id=sid, user=user, expires_at=now + timedelta(seconds=SESSION_MAX_AGE if remember else SESSION_SHORT_AGE)))
-                await s.commit()
-            resp = RedirectResponse(self._local(next_url, self.url("")), 303)
-            resp.set_cookie(SESSION_COOKIE, self.signer.dump(user, sid), max_age=SESSION_MAX_AGE if remember else None,
-                            httponly=True, samesite="lax", secure=self._secure_cookie(request), path=self.cookie_path)
-            return resp
+            return await self._start_session(request, user, remember=bool(form.get("remember")), next_url=next_url)
 
         @r.post("/logout", include_in_schema=False, dependencies=[Csrf])
         async def logout(request: Request, user: str = User):
@@ -493,8 +563,12 @@ class Admin:
                             for ma in visible if self.can(user, "export", ma) and ql in f"export {ma.name_plural.lower()}"]
             commands = [("Toggle dark mode", "dark_mode", "theme", ["T"], None), ("Keyboard shortcuts", "keyboard", "keys", ["?"], None),
                         ("Audit log", "history", None, None, self.url("_log"))]
-            if user in self.owners:
+            if self.is_owner(user) and self.roles_enabled:
                 commands.append(("Roles and permissions", "shield_person", None, None, self.url("_roles")))
+            if self.is_owner(user) and self.builtin_users:
+                commands.append(("Users", "group", None, None, self.url("_users")))
+            if self.builtin_users:
+                commands.append(("Change my password", "password", None, None, self.url("_account")))
             for label, icon, cmd, keys, url in commands:
                 if not q or ql in label.lower():
                     actions.append({"label": label, "icon": icon, "cmd": cmd, "keys": keys, "url": url, "sub": "fastyfold"})

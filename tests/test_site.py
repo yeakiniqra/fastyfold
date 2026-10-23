@@ -47,11 +47,6 @@ def test_reserved_slugs(bare, slug):
         bare.register(A)
 
 
-def test_secret_key_is_required():
-    with pytest.raises(ValueError, match="secret_key"):
-        Admin(create_async_engine("sqlite+aiosqlite://"), secret_key="", authenticate=authenticate)
-
-
 def test_groups(admin):
     groups = admin.groups("admin")
     assert [(g["name"], g["icon"], [m.slug for m in g["models"]]) for g in groups] == [

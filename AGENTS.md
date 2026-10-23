@@ -36,7 +36,7 @@ admin.register(OrderAdmin)
 admin.mount(app, "/admin")
 ```
 
-That is the whole public API: `Admin`, `ModelAdmin` and `action`.
+That is the whole public API: `Admin`, `ModelAdmin` and `action`. The shortest setup is `admin = Admin(engine); admin.register(Order); admin.mount(app)`, which uses built-in users and a generated secret key (section 4d).
 
 ## 2. Request flow
 
@@ -155,6 +155,22 @@ Relations and files in `_save`:
 - **Files:** `storage.check_upload` enforces `max_upload` and, for images, the real file signature. New files are saved as `<slug>/<random>.<ext>`; the replaced or removed file is deleted after commit, and so are a deleted record's files.
 
 Type notes: a `TypeDecorator` is classified by its `impl`. A foreign key's `key_kind` is the kind of its own column (int, str or uuid), so string and UUID keys parse correctly. `_save` and the API share `Admin._assign` for setting values and computing the audit `changes`.
+
+## 4d. Zero-config start: boot, secret key, built-in users (`users.py`)
+
+- **`Admin._boot()`** runs once per process, on the first request. It's a router-level dependency on every fastyfold router, and `_user`/`_csrf` call it too. It:
+  - creates fastyfold's tables;
+  - loads the signing key from `fastyfold_setting`, or writes a new one there. A race between workers is settled by the primary key: whoever commits first wins, and the others re-read.
+
+  `Admin.signer` raises if it's used before boot, unless `secret_key=` was passed.
+- **Built-in users** (`authenticate=None`): `fastyfold_user` has username, PBKDF2 hash, `is_owner` and `last_login_at`.
+  - **Sign-in:** `users.authenticate` hashes even for unknown names, so response time doesn't reveal which usernames exist.
+  - **First run:** while there are no users, `/login` redirects to `/setup`. The setup page prints a one-time code, kept in `fastyfold_setting` so every worker agrees on it. Wrong codes count against the sign-in rate limit. The first account is an owner, and the code is deleted afterwards.
+  - **Owners:** `Admin.is_owner(user)` is true for `owners=[...]` or a built-in user marked owner. That flag is loaded per request into `users.current_owner` by `_signed_in`, the same way role grants are.
+  - **Roles:** `Admin.roles_enabled` is true with `owners=` or built-in users.
+- **Users screen** (`/_users`, owners only): create, edit (password, owner flag, roles) and delete. Usernames can't be renamed, because the audit log and role membership refer to them. You can't demote or delete yourself, so there is always an owner. A reset password or a demotion ends that user's sessions.
+- **My account** (`/_account`, any built-in user): change your own password. That ends your other sessions and keeps this one.
+- **`register(*items)`** wraps a plain model in `type(f"{Model}Admin", (ModelAdmin,), {"model": Model})`.
 
 ## 4c. Roles (`roles.py`)
 
